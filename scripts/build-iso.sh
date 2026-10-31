@@ -227,6 +227,11 @@ chmod +x "${ROOTFS_DIR}/etc/profile.d/bootos.sh"
 
 echo "bootos" > "${ROOTFS_DIR}/etc/hostname"
 
+# Configure sysctl to enable kexec loading
+mkdir -p "${ROOTFS_DIR}/etc/sysctl.d"
+echo "kernel.kexec_load_disabled = 0" >> "${ROOTFS_DIR}/etc/sysctl.conf" 2>/dev/null || true
+echo "kernel.kexec_load_disabled = 0" > "${ROOTFS_DIR}/etc/sysctl.d/99-kexec.conf" 2>/dev/null || true
+
 # 5. Create /init wrapper with hardware detection & module auto-loading
 echo "--> Packing complete OS into RAM-resident initramfs..."
 cat <<'EOF' > "${ROOTFS_DIR}/init"
@@ -236,6 +241,9 @@ mount -t sysfs none /sys
 mount -t devtmpfs none /dev
 mount -t tmpfs none /tmp
 mount -t tmpfs none /run
+
+# Enable kexec in Alpine kernel (if not already enabled by bootloader)
+echo 0 > /proc/sys/kernel/kexec_load_disabled 2>/dev/null || true
 
 # 1. Generate module dependencies
 KERNEL_VER=$(uname -r)
@@ -374,13 +382,13 @@ LABEL bootos
   MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND console=tty0 console=tty1 init=/init lockdown=none
+  APPEND console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
 
 LABEL bootos_quiet
   MENU LABEL ^2. Start BootOS (Quiet Mode)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND quiet console=tty0 console=tty1 init=/init lockdown=none
+  APPEND quiet console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
 EOF
 
 # 7. Configure GRUB (UEFI Boot)
@@ -390,12 +398,12 @@ set default="0"
 set timeout=3
 
 menuentry "BootOS (100% DRAM Mode)" {
-    linux /boot/vmlinuz console=tty0 console=tty1 init=/init lockdown=none
+    linux /boot/vmlinuz console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
     initrd /boot/initramfs.gz
 }
 
 menuentry "BootOS (Quiet Mode)" {
-    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init lockdown=none
+    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
     initrd /boot/initramfs.gz
 }
 EOF

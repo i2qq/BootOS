@@ -176,30 +176,35 @@ boot_kexec() {
         return 1
     fi
 
+    # Attempt to unlock kexec sysctl if writable
+    if [ -f /proc/sys/kernel/kexec_load_disabled ]; then
+        echo 0 > /proc/sys/kernel/kexec_load_disabled 2>/dev/null || true
+    fi
+
     echo -e "Kernel : $kernel_path"
     echo -e "Initrd : $initrd_path"
     echo -e "Params : $cmdline"
 
     LOADED=0
-    # 1. Try modern file-based syscall kexec -s -l (bypasses EPERM / lockdown)
+    # 1. Try legacy syscall kexec -l (standard for Alpine/BusyBox)
     if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
-        if kexec -s -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" 2>/dev/null; then
+        if kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" 2>/dev/null; then
             LOADED=1
         fi
     else
-        if kexec -s -l "$kernel_path" --command-line="$cmdline" 2>/dev/null; then
+        if kexec -l "$kernel_path" --command-line="$cmdline" 2>/dev/null; then
             LOADED=1
         fi
     fi
 
-    # 2. Fallback to legacy syscall kexec -l
+    # 2. Try modern file-based syscall kexec -s -l
     if [ $LOADED -eq 0 ]; then
         if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
-            if kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" 2>/dev/null; then
+            if kexec -s -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" 2>/dev/null; then
                 LOADED=1
             fi
         else
-            if kexec -l "$kernel_path" --command-line="$cmdline" 2>/dev/null; then
+            if kexec -s -l "$kernel_path" --command-line="$cmdline" 2>/dev/null; then
                 LOADED=1
             fi
         fi
@@ -207,10 +212,19 @@ boot_kexec() {
 
     # 3. Fallback with --force / --reset-vga
     if [ $LOADED -eq 0 ]; then
-        echo -e "${YELLOW}Retrying with reset-vga flags...${RESET}"
+        echo -e "${YELLOW}Retrying with reset-vga / force flags...${RESET}"
         if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
-            kexec -s -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" --reset-vga || \
-            kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" --reset-vga
+            kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" --reset-vga 2>/dev/null || \
+            kexec -s -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" --reset-vga 2>/dev/null
+            [ $? -eq 0 ] && LOADED=1
+        fi
+    fi
+
+    # 4. Final attempt showing stderr if still failing
+    if [ $LOADED -eq 0 ]; then
+        echo -e "${YELLOW}Diagnostics attempt (showing output):${RESET}"
+        if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
+            kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline"
             [ $? -eq 0 ] && LOADED=1
         fi
     fi
@@ -221,7 +235,14 @@ boot_kexec() {
         kexec -e
     else
         echo -e "\n${RED}Failed to load kernel into kexec!${RESET}"
-        echo -e "${YELLOW}Tip: On UEFI/Lockdown systems, use Option [1] to flash the ISO directly to disk.${RESET}"
+        if [ -f /proc/sys/kernel/kexec_load_disabled ]; then
+            dis_val=$(cat /proc/sys/kernel/kexec_load_disabled 2>/dev/null || echo "?")
+            echo -e "${YELLOW}Kernel kexec status (/proc/sys/kernel/kexec_load_disabled): ${dis_val}${RESET}"
+            if [ "$dis_val" = "1" ]; then
+                echo -e "${RED}Alpine kernel locked kexec at boot. Boot BootOS with 'kexec_load_disabled=0'.${RESET}"
+            fi
+        fi
+        echo -e "${YELLOW}Tip: You can also use Option [1] to flash the ISO directly to the VM disk.${RESET}"
         echo "Press Enter to return..."
         read -r _
         return 1
