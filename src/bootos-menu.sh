@@ -56,12 +56,10 @@ setup_network() {
     echo -e "\n${YELLOW}Scanning for hardware and probing network drivers...${RESET}"
     depmod -a 2>/dev/null || true
 
-    # Explicitly load common network modules (VirtualBox Intel PRO/1000, VirtIO, Realtek, etc.)
     for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
         modprobe "$mod" 2>/dev/null || true
     done
 
-    # Probe all PCI modaliases
     find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
     sleep 1
 
@@ -108,6 +106,8 @@ boot_kexec() {
     echo -e "\n${CYAN}Loading target kernel into DRAM via kexec...${RESET}"
     if ! command -v kexec >/dev/null 2>&1; then
         echo -e "${RED}Error: kexec utility not found!${RESET}"
+        echo "Press Enter to return..."
+        read -r _
         return 1
     fi
 
@@ -127,6 +127,46 @@ boot_kexec() {
         kexec -e
     else
         echo -e "${RED}Failed to load kernel into kexec!${RESET}"
+        echo "Press Enter to return..."
+        read -r _
+    fi
+}
+
+# Extract kernel and initrd from ISO using 7z or loop mount
+extract_iso_assets() {
+    iso_file="$1"
+    target_dir="$2"
+    mkdir -p "$target_dir"
+
+    # Ensure kernel loop and fs modules are loaded
+    modprobe loop 2>/dev/null || true
+    modprobe isofs 2>/dev/null || true
+    modprobe squashfs 2>/dev/null || true
+
+    # Method 1: Using 7z (Direct, no loop device required)
+    if command -v 7z >/dev/null 2>&1; then
+        echo -e "${CYAN}Extracting ISO assets using 7z...${RESET}"
+        7z x -y -o"$target_dir" "$iso_file" >/dev/null 2>&1 || true
+    fi
+
+    # Method 2: Fallback to loop mount if 7z extracted nothing
+    k_check=$(find "$target_dir" -type f \( -name "vmlinuz*" -o -name "linux*" -o -name "bzImage*" \) 2>/dev/null | head -n1)
+    if [ -z "$k_check" ]; then
+        echo -e "${CYAN}Trying loop mount for $iso_file...${RESET}"
+        mount_dir="/tmp/loop_mnt_$$"
+        mkdir -p "$mount_dir"
+        
+        # Ensure loop nodes exist
+        [ -e /dev/loop-control ] || mknod /dev/loop-control c 10 237 2>/dev/null || true
+        for num in 0 1 2 3 4 5 6 7; do
+            [ -e "/dev/loop$num" ] || mknod "/dev/loop$num" b 7 "$num" 2>/dev/null || true
+        done
+
+        if mount -o loop,ro "$iso_file" "$mount_dir" 2>/dev/null; then
+            cp -r "$mount_dir"/* "$target_dir"/ 2>/dev/null || true
+            umount "$mount_dir" 2>/dev/null || true
+        fi
+        rm -rf "$mount_dir"
     fi
 }
 
@@ -286,7 +326,7 @@ github_release_os_installer() {
     echo -e "\n${BOLD}Selected:${RESET} $selected_name"
     echo -e "${CYAN}What would you like to do with this OS image?${RESET}"
     echo -e "  ${GREEN}[1]${RESET} Flash & Install directly to Hard Drive / SSD (/dev/sda)"
-    echo -e "  ${GREEN}[2]${RESET} Live DRAM Boot (Mount in RAM and kexec into it)"
+    echo -e "  ${GREEN}[2]${RESET} Live DRAM Boot (Mount/Extract in RAM and kexec into it)"
     echo -e "  ${GREEN}[3]${RESET} Download ISO to local storage"
     echo -e "  ${GREEN}[4]${RESET} Back to Menu"
     echo -n "Choice [1-4]: "
@@ -329,29 +369,44 @@ github_release_os_installer() {
             
             if [ -s /tmp/target_os.iso ]; then
                 echo -e "${CYAN}Extracting kernel and initrd from ISO...${RESET}"
-                mkdir -p /tmp/gh_mount /tmp/kexec_boot
-                mount -o loop /tmp/target_os.iso /tmp/gh_mount
+                rm -rf /tmp/extracted_iso /tmp/kexec_boot
+                mkdir -p /tmp/extracted_iso /tmp/kexec_boot
 
-                k_file=$(find /tmp/gh_mount -type f \( -name "vmlinuz*" -o -name "linux" -o -name "bzImage" \) | head -n1)
-                i_file=$(find /tmp/gh_mount -type f \( -name "initrd*" -o -name "initramfs*" \) | head -n1)
+                extract_iso_assets "/tmp/target_os.iso" "/tmp/extracted_iso"
+
+                # Locate kernel
+                k_file=$(find /tmp/extracted_iso -type f \( -name "vmlinuz*" -o -name "linux*" -o -name "bzImage*" \) 2>/dev/null | head -n1)
+                # Locate initrd
+                i_file=$(find /tmp/extracted_iso -type f \( -name "initrd*" -o -name "initramfs*" \) 2>/dev/null | head -n1)
 
                 if [ -n "$k_file" ]; then
-                    echo "Found Kernel: $k_file"
+                    echo -e "${GREEN}✓ Found Kernel:${RESET} $k_file"
                     cp "$k_file" /tmp/kexec_boot/vmlinuz
                     if [ -n "$i_file" ]; then
-                        echo "Found Initrd: $i_file"
+                        echo -e "${GREEN}✓ Found Initrd:${RESET} $i_file"
                         cp "$i_file" /tmp/kexec_boot/initrd
                     fi
-                    umount /tmp/gh_mount
 
-                    echo -e "\n${CYAN}Boot parameters (press Enter for default 'boot=casper toram iso-scan/filename=/tmp/target_os.iso quiet'):${RESET}"
+                    # Determine optimal command line arguments
+                    default_params="quiet root=/dev/ram0 rw"
+                    if [ -d "/tmp/extracted_iso/casper" ]; then
+                        default_params="boot=casper toram iso-scan/filename=/tmp/target_os.iso quiet splash"
+                    elif [ -f "/tmp/extracted_iso/init" ] || [ -f "/tmp/extracted_iso/usr/local/bin/bootos" ]; then
+                        default_params="init=/init quiet console=tty1"
+                    fi
+
+                    echo -e "\n${CYAN}Boot parameters (press Enter for auto-detected defaults):${RESET}"
+                    echo -e "Default: ${YELLOW}$default_params${RESET}"
+                    echo -n "Params: "
                     read -r user_params
-                    [ -z "$user_params" ] && user_params="boot=casper toram iso-scan/filename=/tmp/target_os.iso quiet splash"
+                    [ -z "$user_params" ] && user_params="$default_params"
 
                     boot_kexec "/tmp/kexec_boot/vmlinuz" "/tmp/kexec_boot/initrd" "$user_params"
                 else
-                    umount /tmp/gh_mount
-                    echo -e "${RED}Could not locate standard kernel inside the ISO!${RESET}"
+                    echo -e "${RED}Could not locate a standard Linux kernel inside the ISO!${RESET}"
+                    echo "Contents extracted:"
+                    ls -la /tmp/extracted_iso
+                    echo "Press Enter to return..."
                     read -r _
                 fi
             else
@@ -423,12 +478,18 @@ download_and_boot_lubuntu() {
 
             if [ -s /tmp/lubuntu.iso ]; then
                 echo -e "${GREEN}Extracting kernel and initrd from ISO...${RESET}"
-                mkdir -p /tmp/iso_mount
-                mount -o loop /tmp/lubuntu.iso /tmp/iso_mount
-                cp /tmp/iso_mount/casper/vmlinuz /tmp/target_os/
-                cp /tmp/iso_mount/casper/initrd /tmp/target_os/
-                umount /tmp/iso_mount
-                boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd" "boot=casper toram iso-scan/filename=/tmp/lubuntu.iso quiet splash"
+                rm -rf /tmp/lubuntu_extracted
+                extract_iso_assets "/tmp/lubuntu.iso" "/tmp/lubuntu_extracted"
+
+                k_file=$(find /tmp/lubuntu_extracted -type f \( -name "vmlinuz*" -o -name "linux*" \) 2>/dev/null | head -n1)
+                i_file=$(find /tmp/lubuntu_extracted -type f \( -name "initrd*" -o -name "initramfs*" \) 2>/dev/null | head -n1)
+
+                if [ -n "$k_file" ]; then
+                    boot_kexec "$k_file" "$i_file" "boot=casper toram iso-scan/filename=/tmp/lubuntu.iso quiet splash"
+                else
+                    echo -e "${RED}Could not locate kernel inside Lubuntu ISO!${RESET}"
+                    read -r _
+                fi
             else
                 echo -e "${RED}Download failed!${RESET}"
                 read -r _
@@ -477,12 +538,14 @@ download_and_boot_ubuntu() {
 
             wget -q --show-progress -O /tmp/ubuntu.iso "$custom_url" || curl -L -o /tmp/ubuntu.iso "$custom_url"
             if [ -s /tmp/ubuntu.iso ]; then
-                mkdir -p /tmp/iso_mount
-                mount -o loop /tmp/ubuntu.iso /tmp/iso_mount
-                cp /tmp/iso_mount/casper/vmlinuz /tmp/target_os/
-                cp /tmp/iso_mount/casper/initrd /tmp/target_os/
-                umount /tmp/iso_mount
-                boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd" "boot=casper toram iso-scan/filename=/tmp/ubuntu.iso quiet splash"
+                rm -rf /tmp/ubuntu_extracted
+                extract_iso_assets "/tmp/ubuntu.iso" "/tmp/ubuntu_extracted"
+                k_file=$(find /tmp/ubuntu_extracted -type f \( -name "vmlinuz*" -o -name "linux*" \) 2>/dev/null | head -n1)
+                i_file=$(find /tmp/ubuntu_extracted -type f \( -name "initrd*" -o -name "initramfs*" \) 2>/dev/null | head -n1)
+
+                if [ -n "$k_file" ]; then
+                    boot_kexec "$k_file" "$i_file" "boot=casper toram iso-scan/filename=/tmp/ubuntu.iso quiet splash"
+                fi
             fi
             ;;
         *)
@@ -583,19 +646,41 @@ while true; do
         5|"net"|"network") setup_network ;;
         6) flash_drive_utility ;;
         7)
-            echo -e "${GREEN}Chainloading netboot.xyz via iPXE...${RESET}"
-            if command -v ipxe >/dev/null 2>&1; then
-                ipxe
+            echo -e "\n${GREEN}Preparing Netboot.xyz...${RESET}"
+            mkdir -p /tmp/netboot
+            if [ -d /sys/firmware/efi ]; then
+                echo -e "${CYAN}Detected UEFI mode. Downloading netboot.xyz.efi...${RESET}"
+                curl -sSL -o /tmp/netboot/netboot.xyz.efi https://boot.netboot.xyz/ipxe/netboot.xyz.efi
+                kexec -s -l /tmp/netboot/netboot.xyz.efi 2>/dev/null || kexec -l /tmp/netboot/netboot.xyz.efi 2>/dev/null
             else
-                mkdir -p /tmp/netboot
-                wget -O /tmp/netboot/netboot.xyz.lkrn https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn 2>/dev/null || curl -L -o /tmp/netboot/netboot.xyz.lkrn https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn
-                kexec -l /tmp/netboot/netboot.xyz.lkrn
+                echo -e "${CYAN}Detected Legacy BIOS mode. Downloading netboot.xyz.lkrn...${RESET}"
+                curl -sSL -o /tmp/netboot/netboot.xyz.lkrn https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn
+                kexec -l /tmp/netboot/netboot.xyz.lkrn 2>/dev/null
+            fi
+
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}Launching Netboot.xyz!${RESET}"
+                sleep 1
                 kexec -e
+            else
+                echo -e "${RED}Failed to load Netboot.xyz into kexec!${RESET}"
+                echo "Press Enter to return..."
+                read -r _
             fi
             ;;
         8)
-            echo -e "\n${CYAN}Dropping to BootOS Terminal Shell. Type 'exit' to return to menu.${RESET}\n"
-            /bin/sh
+            echo -e "\n${CYAN}======================================================${RESET}"
+            echo -e " ${BOLD}BootOS Root Terminal Shell${RESET}"
+            echo -e " Available tools: curl, wget, 7z, kexec, fdisk, parted, lsblk, ip"
+            echo -e " Type 'exit' to return to the BootOS menu."
+            echo -e "${CYAN}======================================================${RESET}\n"
+            if command -v cttyhack >/dev/null 2>&1; then
+                setsid cttyhack /bin/sh
+            else
+                /bin/sh -i
+            fi
+            echo -e "\nReturning to menu..."
+            sleep 1
             ;;
         9)
             echo -e "\n${YELLOW}Rebooting...${RESET}"

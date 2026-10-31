@@ -32,12 +32,13 @@ https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
 EOF
 
 # 3. Chroot and install essential tools & Linux Kernel
-echo "--> Installing kernel, networking drivers, and runtime packages..."
+echo "--> Installing kernel, 7zip, networking drivers, and runtime packages..."
 chroot "${ROOTFS_DIR}" /bin/sh -c "
   apk update
   apk add --no-cache \
     linux-lts \
     kexec-tools \
+    7zip \
     curl \
     wget \
     busybox-extras \
@@ -109,7 +110,7 @@ cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
 ::sysinit:/sbin/rc boot
 ::wait:/sbin/rc default
 
-tty1::respawn:/usr/local/bin/bootos
+tty1::respawn:/usr/bin/setsid /sbin/cttyhack /usr/local/bin/bootos
 tty2::respawn:/sbin/getty 38400 tty2
 tty3::respawn:/sbin/getty 38400 tty3
 
@@ -144,30 +145,42 @@ depmod -a "$KERNEL_VER" 2>/dev/null || true
 echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
 mdev -s 2>/dev/null || true
 
-# 3. Explicitly probe common virtual and physical NIC modules
+# 3. Explicitly probe core storage, loop & filesystem modules
+modprobe loop 2>/dev/null || true
+modprobe isofs 2>/dev/null || true
+modprobe squashfs 2>/dev/null || true
+modprobe overlay 2>/dev/null || true
+
+# Ensure loop device nodes exist in /dev
+[ -e /dev/loop-control ] || mknod /dev/loop-control c 10 237 2>/dev/null || true
+for i in 0 1 2 3 4 5 6 7; do
+    [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i" 2>/dev/null || true
+done
+
+# 4. Explicitly probe common virtual and physical NIC modules
 for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
     modprobe $mod 2>/dev/null || true
 done
 
-# 4. Probe PCI modaliases
+# 5. Probe PCI modaliases
 find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
 
-# 5. Bring up loopback
+# 6. Bring up loopback
 ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null
 
-# 6. Default DNS
+# 7. Default DNS
 echo "nameserver 1.1.1.1" > /etc/resolv.conf
 echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 
-# 7. Auto-configure network interfaces via DHCP
+# 8. Auto-configure network interfaces via DHCP
 for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
     ip link set "$iface" up 2>/dev/null
     udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
 done
 
-# Clean console and start BootOS
+# Clean console and start BootOS with full controlling TTY
 clear
-exec /usr/local/bin/bootos
+exec setsid cttyhack /usr/local/bin/bootos
 EOF
 chmod +x "${ROOTFS_DIR}/init"
 
