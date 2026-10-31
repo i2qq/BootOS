@@ -25,7 +25,19 @@
 
 You can flash `bootos.iso` onto your 2GB USB flash drive using any standard USB burning tool on Windows:
 
-### Method 1: Using Rufus (Recommended for Old PCs)
+### Method 1: Using the Custom BootOS Flasher Executable (Recommended - No Rufus Needed!)
+BootOS includes a standalone Windows executable flasher and runner:
+1. Double-click **`bootos-flasher.exe`** (or **`flash-usb.bat`**).
+2. The tool automatically scans and detects all connected USB drives (shielding internal Windows system drives from being overwritten).
+3. Select your USB drive number, confirm with `YES`, and the flasher writes the hybrid bootloader raw sector-by-sector directly to the drive with live speed and progress tracking.
+4. Done! Your USB is 100% bootable on both Legacy BIOS and UEFI without needing Rufus or any 3rd party tool.
+
+### Method 2: Execute BootOS Directly on Windows (Virtual Sandbox Mode)
+Want to run or test BootOS directly on Windows without rebooting?
+1. Double-click **`bootos-run.bat`** (or select Option `[2]` inside `bootos-flasher.exe`).
+2. BootOS will immediately launch inside an interactive VirtualBox or QEMU window directly on your desktop!
+
+### Alternative: Using Rufus (Ensure DD Image Mode)
 1. Download [Rufus](https://rufus.ie) (portable version is fine).
 2. Insert your 2GB USB drive.
 3. In Rufus:

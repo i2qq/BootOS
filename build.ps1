@@ -29,7 +29,18 @@ if (Test-Path "$workspacePath\bootos.iso") {
     Write-Host " File: $($iso.FullName)" -ForegroundColor White
     Write-Host " Size: $sizeMB MB (Well under 1 GB, fits easily on a 2GB USB)" -ForegroundColor White
     Write-Host "==========================================================" -ForegroundColor Green
-    Write-Host "`nTo flash to your USB drive, use Rufus (rufus.ie), BalenaEtcher, or Ventoy." -ForegroundColor Cyan
+    # Build standalone Windows executable flasher & runner
+    $gccCheck = Get-Command gcc.exe -ErrorAction SilentlyContinue
+    if ($gccCheck -and (Test-Path "$workspacePath\src\bootos-flasher.c")) {
+        Write-Host "Compiling standalone Windows executable flasher (bootos-flasher.exe)..." -ForegroundColor Cyan
+        & gcc -O2 "$workspacePath\src\bootos-flasher.c" -o "$workspacePath\bootos-flasher.exe"
+        Copy-Item "$workspacePath\bootos-flasher.exe" "$workspacePath\bootos.exe" -Force
+    }
+
+    Write-Host "`nTo flash to USB (No Rufus required):" -ForegroundColor Cyan
+    Write-Host "  -> Double-click 'bootos-flasher.exe' (or 'flash-usb.bat')" -ForegroundColor Yellow
+    Write-Host "`nTo execute BootOS directly on Windows (VM Sandbox):" -ForegroundColor Cyan
+    Write-Host "  -> Double-click 'bootos-run.bat' (or option [2] in bootos-flasher.exe)" -ForegroundColor Yellow
 } else {
     Write-Host "`nBuild failed or bootos.iso not found." -ForegroundColor Red
 }
