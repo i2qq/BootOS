@@ -656,24 +656,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SendMessage(g_hStatsLabel, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             // Action Buttons
-            g_hBtnMakeExec = CreateWindowA("BUTTON", "⚡ Make USB Executable",
+            g_hBtnRawFlash = CreateWindowA("BUTTON", "⚡ Flash USB (Legacy BIOS + UEFI)",
                                            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                                           20, 312, 180, 36, hWnd, (HMENU)ID_BTN_MAKE_EXEC, g_hInstance, NULL);
-            SendMessage(g_hBtnMakeExec, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
+                                           20, 312, 230, 36, hWnd, (HMENU)ID_BTN_RAW_FLASH, g_hInstance, NULL);
+            SendMessage(g_hBtnRawFlash, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-            g_hBtnRawFlash = CreateWindowA("BUTTON", "Raw Hybrid Flash",
+            g_hBtnMakeExec = CreateWindowA("BUTTON", "Copy Files (UEFI)",
                                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                           208, 312, 130, 36, hWnd, (HMENU)ID_BTN_RAW_FLASH, g_hInstance, NULL);
-            SendMessage(g_hBtnRawFlash, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+                                           260, 312, 115, 36, hWnd, (HMENU)ID_BTN_MAKE_EXEC, g_hInstance, NULL);
+            SendMessage(g_hBtnMakeExec, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-            g_hBtnRunVBox = CreateWindowA("BUTTON", "▶ VirtualBox Test",
+            g_hBtnRunVBox = CreateWindowA("BUTTON", "▶ VirtualBox",
                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          346, 312, 120, 36, hWnd, (HMENU)ID_BTN_RUN_VBOX, g_hInstance, NULL);
+                                          385, 312, 95, 36, hWnd, (HMENU)ID_BTN_RUN_VBOX, g_hInstance, NULL);
             SendMessage(g_hBtnRunVBox, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             HWND hBtnExit = CreateWindowA("BUTTON", "Exit",
                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          474, 312, 71, 36, hWnd, (HMENU)ID_BTN_EXIT, g_hInstance, NULL);
+                                          490, 312, 55, 36, hWnd, (HMENU)ID_BTN_EXIT, g_hInstance, NULL);
             SendMessage(hBtnExit, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             RefreshDriveList();
@@ -699,23 +699,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
                     if (g_worker.success) {
                         SendMessage(g_hProgress, PBM_SETPOS, 100, 0);
-                        SetWindowTextA(g_hStatusLabel, "SUCCESS: USB drive is now bootable and executable!");
-                        SetWindowTextA(g_hStatsLabel, "Drive opened in File Explorer. You can copy bootos.iso anytime.");
+                        if (g_worker.isRawFlash) {
+                            SetWindowTextA(g_hStatusLabel, "SUCCESS: BootOS flashed with Hybrid MBR + UEFI support!");
+                            SetWindowTextA(g_hStatsLabel, "Ready to boot on your Old PC (Legacy BIOS) or modern UEFI PC.");
 
-                        // Open USB drive in Windows File Explorer
-                        if (!g_worker.isRawFlash && g_worker.targetDriveLetter != ' ') {
-                            char rootPath[16];
-                            snprintf(rootPath, sizeof(rootPath), "%c:\\", g_worker.targetDriveLetter);
-                            ShellExecuteA(NULL, "open", "explorer.exe", rootPath, NULL, SW_SHOWNORMAL);
+                            MessageBoxA(hWnd,
+                                        "SUCCESS: BootOS has been flashed to USB with Hybrid MBR support!\n\n"
+                                        "How to boot your Old PC (Windows 7):\n"
+                                        " 1. Plug the USB into your old PC.\n"
+                                        " 2. Turn on the PC and IMMEDIATELY tap the Boot Menu key:\n"
+                                        "    - Dell / Lenovo / Acer: F12\n"
+                                        "    - HP: F9 or Esc\n"
+                                        "    - ASUS / MSI: F8 or F11\n"
+                                        " 3. Select 'USB Storage Device' or 'USB-HDD' from the menu.\n"
+                                        " 4. BootOS will start immediately into DRAM!",
+                                        "Bootable USB Ready (Old PCs & UEFI)", MB_OK | MB_ICONINFORMATION);
+                        } else {
+                            SetWindowTextA(g_hStatusLabel, "SUCCESS: USB drive configured with UEFI bootloader!");
+                            SetWindowTextA(g_hStatsLabel, "Drive opened in File Explorer. Drag-and-drop bootos.iso anytime.");
+
+                            if (g_worker.targetDriveLetter != ' ') {
+                                char rootPath[16];
+                                snprintf(rootPath, sizeof(rootPath), "%c:\\", g_worker.targetDriveLetter);
+                                ShellExecuteA(NULL, "open", "explorer.exe", rootPath, NULL, SW_SHOWNORMAL);
+                            }
+
+                            MessageBoxA(hWnd,
+                                        "Your USB flash drive is configured for UEFI systems.\n\n"
+                                        "Note: For older Legacy BIOS PCs (like Windows 7 PCs),\n"
+                                        "use 'Flash USB (Legacy BIOS + UEFI)' to write the MBR boot code.",
+                                        "UEFI USB Ready", MB_OK | MB_ICONINFORMATION);
                         }
-
-                        MessageBoxA(hWnd,
-                                    "Your USB flash drive is now 100% executable and bootable!\n\n"
-                                    "File Manager Integration:\n"
-                                    "  - The drive is open in Windows File Explorer.\n"
-                                    "  - You can drag-and-drop or copy bootos.iso to this drive anytime!\n"
-                                    "  - Boots on Legacy BIOS and modern UEFI hardware.",
-                                    "USB Drive Ready", MB_OK | MB_ICONINFORMATION);
                     } else {
                         SendMessage(g_hProgress, PBM_SETPOS, 0, 0);
                         SetWindowTextA(g_hStatusLabel, "Operation failed.");
