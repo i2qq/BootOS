@@ -377,11 +377,25 @@ echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 # 8. Auto-configure network interfaces via DHCP
 for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
     ip link set "$iface" up 2>/dev/null
-    udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 5 2>/dev/null &
+done
+# Settle carrier and acquire DHCP
+for i in 1 2; do
+    for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
+        c=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo 0)
+        if [ "$c" = "1" ]; then
+            udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
+            break 2
+        fi
+    done
+    sleep 1
 done
 
+# Silence kernel dmesg spam onto console
+echo 1 > /proc/sys/kernel/printk 2>/dev/null || true
+
 # Start BootOS with persistent loop & TTY
-export TERM=linux
+export TERM=vt100
+export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 export HOME=/root
 clear
 while true; do

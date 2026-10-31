@@ -23,10 +23,19 @@ get_net_info() {
     if [ -z "$ip_addr" ]; then
         ip_addr=$(ip -o -4 addr show 2>/dev/null | grep -v ' lo ' | awk '{print $4}' | cut -d/ -f1 | head -n1)
     fi
+    if [ -z "$ip_addr" ]; then
+        for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
+            if [ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo 0)" = "1" ]; then
+                udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -n -q -t 2 -T 1 >/dev/null 2>&1 || true
+                ip_addr=$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+                [ -n "$ip_addr" ] && break
+            fi
+        done
+    fi
     if [ -n "$ip_addr" ]; then
         echo -e "${GREEN}Connected ($ip_addr)${RESET}"
     else
-        echo -e "${RED}Disconnected (Run Option 7)${RESET}"
+        echo -e "${RED}Disconnected (Run Option 8)${RESET}"
     fi
 }
 
