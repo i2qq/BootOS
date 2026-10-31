@@ -1,6 +1,6 @@
-<<<<<<< HEAD
+
 # BootOS
-=======
+
 # BootOS - 100% RAM-Resident OS Downloader & Bootloader
 
 **BootOS** is an ultra-compact (~150MB), terminal-style operating system designed to run **100% in DRAM**. Once booted, it frees up your USB drive completely and lets you download and boot directly into another operating system (such as **Lubuntu**, **Ubuntu**, **Debian**, or custom Linux distributions) using `kexec` or by flashing to an internal hard drive.
