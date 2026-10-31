@@ -1,39 +1,75 @@
 #!/bin/sh
 # ==============================================================================
-# BootOS File Explorer Launcher
+# BootOS File Explorer Native Desktop Launcher
 # ==============================================================================
-# Starts the background Python 3 filesystem server and opens the BootOS
-# File Explorer in native desktop app mode via the proven GUI subsystem.
-# ==============================================================================
+export DISPLAY="${DISPLAY:-:0}"
+mkdir -p /tmp/.X11-unix /run/user/0 /root/.config/openbox
+chmod 1777 /tmp/.X11-unix
+chmod 700 /run/user/0
+export XDG_RUNTIME_DIR=/run/user/0
 
-SERVER_DIR="/usr/local/share/bootos-explorer"
-if [ ! -d "$SERVER_DIR" ] && [ -d "$(dirname "$0")/explorer" ]; then
-    SERVER_DIR="$(cd "$(dirname "$0")/explorer" && pwd)"
-fi
-
-# 1. Start Python 3 Explorer Server if not already active
-if ! pgrep -f "bootos-explorer/server.py" >/dev/null 2>&1 && ! pgrep -f "src/explorer/server.py" >/dev/null 2>&1; then
-    echo "--> Starting BootOS File Explorer backend server..."
-    python3 "${SERVER_DIR}/server.py" >/tmp/explorer-server.log 2>&1 &
-    sleep 0.8
-fi
-
-# 2. Wait up to 3 seconds for server to respond
-COUNT=0
-while [ $COUNT -lt 6 ]; do
-    if curl -s http://127.0.0.1:54321/api/drives >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.5
-    COUNT=$((COUNT + 1))
+# 1. Probe input devices
+for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse; do
+    modprobe "$mod" 2>/dev/null || true
 done
 
-# 3. Launch via the proven GUI browser subsystem in native app mode
-if [ -x /usr/local/bin/browser ]; then
-    exec /usr/local/bin/browser "http://127.0.0.1:54321/" "app"
-elif [ -x "$(dirname "$0")/browser-launcher.sh" ]; then
-    exec "$(dirname "$0")/browser-launcher.sh" "http://127.0.0.1:54321/" "app"
-else
-    echo "Error: GUI browser subsystem not found!"
-    sleep 2
+EXPLORER_SCRIPT="/usr/local/bin/bootos_explorer.py"
+if [ ! -f "$EXPLORER_SCRIPT" ] && [ -f "$(dirname "$0")/bootos_explorer.py" ]; then
+    EXPLORER_SCRIPT="$(cd "$(dirname "$0")" && pwd)/bootos_explorer.py"
 fi
+
+# 2. Check if Xorg is already active
+if pgrep -x Xorg >/dev/null 2>&1; then
+    exec python3 "$EXPLORER_SCRIPT"
+fi
+
+# 3. If Xorg not active, start with Openbox
+cat <<'EOF' > /root/.config/openbox/rc.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <theme>
+    <titleLayout>NLIMC</titleLayout>
+  </theme>
+  <mouse>
+    <dragThreshold>1</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <context name="Close">
+      <mousebind button="Left" action="Click">
+        <action name="Close"/>
+      </mousebind>
+    </context>
+  </mouse>
+  <keyboard>
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+  </keyboard>
+  <applications>
+    <application class="*">
+      <maximized>true</maximized>
+      <decor>yes</decor>
+    </application>
+  </applications>
+</openbox_config>
+EOF
+
+cat <<EOF > /root/.xinitrc
+export XCURSOR_THEME=Adwaita
+export XCURSOR_SIZE=24
+xsetroot -cursor_name left_ptr -solid "#191919" 2>/dev/null || true
+
+# Start Openbox
+openbox &
+
+# Launch pure native desktop application
+python3 "$EXPLORER_SCRIPT"
+
+# Clean exit
+openbox --exit 2>/dev/null || true
+EOF
+
+echo "--> Launching BootOS File Explorer..."
+xinit /root/.xinitrc -- :0 -novtswitch >/tmp/xorg.log 2>&1
+
+chvt 1 2>/dev/null || true
+clear

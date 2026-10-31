@@ -86,7 +86,11 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     gawk \
     nano \
     less \
-    python3
+    python3 \
+    python3-tkinter \
+    py3-pip \
+    py3-pillow \
+    py3-rich
 "
 
 # Copy kernel out to ISO boot folder
@@ -144,15 +148,20 @@ chmod +x "${ROOTFS_DIR}/usr/local/bin/browser"
 ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-launch"
 ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-browser"
 
-# Install BootOS Windows 11 File Explorer
-echo "--> Installing BootOS Windows 11 File Explorer..."
-mkdir -p "${ROOTFS_DIR}/usr/local/share/bootos-explorer"
-cp -r "${WORKSPACE_DIR}/src/explorer"/* "${ROOTFS_DIR}/usr/local/share/bootos-explorer/"
+# Install BootOS Native Desktop File Explorer
+echo "--> Installing BootOS Native Desktop File Explorer..."
+cp "${WORKSPACE_DIR}/src/bootos_explorer.py" "${ROOTFS_DIR}/usr/local/bin/bootos_explorer.py"
+chmod +x "${ROOTFS_DIR}/usr/local/bin/bootos_explorer.py"
 cp "${WORKSPACE_DIR}/src/explorer-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/explorer"
 chmod +x "${ROOTFS_DIR}/usr/local/bin/explorer"
-chmod +x "${ROOTFS_DIR}/usr/local/share/bootos-explorer/server.py"
 ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/local/bin/files"
 ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/bin/explorer"
+
+# Pre-install Python 3 libraries: Pillow, FastAPI, Gradio, Rich, ABC
+echo "--> Installing requested Python 3 libraries: Pillow, FastAPI, Gradio, Rich, ABC..."
+chroot "${ROOTFS_DIR}" /bin/sh -c "
+  pip install --no-cache-dir --break-system-packages fastapi gradio
+"
 
 mkdir -p "${ROOTFS_DIR}/tmp/.X11-unix" "${ROOTFS_DIR}/var/log"
 chmod 1777 "${ROOTFS_DIR}/tmp/.X11-unix"

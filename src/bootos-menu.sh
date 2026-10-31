@@ -929,20 +929,18 @@ Enter GitHub repository or release URL (e.g. ${CYAN}i2qq/BootOS${RESET}):"
 
 launch_file_explorer() {
     show_banner
-    echo -e "${YELLOW}=== Launch BootOS File Explorer (GUI) ===${RESET}\n"
+    echo -e "${YELLOW}=== Launch BootOS File Explorer (Native Desktop App) ===${RESET}\n"
     echo -e "${GREEN}Starting BootOS File Explorer...${RESET}"
-    echo "Tip: Fully functional tabs, breadcrumb address bar, drive meters, and real file operations."
+    echo "Tip: Pure native desktop app (Python 3 & Tk/X11) with instant launch, tabs, drive meters, and real file operations."
     echo "Click Close ([X]) or press Alt+F4 to return to BootOS."
-    sleep 1
+    sleep 0.5
 
     if [ -x /usr/local/bin/explorer ]; then
         /usr/local/bin/explorer
-    elif [ -f /usr/local/share/bootos-explorer/server.py ]; then
-        python3 /usr/local/share/bootos-explorer/server.py >/dev/null 2>&1 &
-        sleep 1
-        browser "http://127.0.0.1:54321/" "app"
+    elif [ -f /usr/local/bin/bootos_explorer.py ]; then
+        python3 /usr/local/bin/bootos_explorer.py
     else
-        echo -e "${RED}File Explorer files not found!${RESET}"
+        echo -e "${RED}File Explorer executable not found!${RESET}"
         sleep 2
     fi
 }
