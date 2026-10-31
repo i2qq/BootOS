@@ -57,15 +57,15 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
 # Copy kernel out to ISO boot folder
 cp "${ROOTFS_DIR}/boot"/vmlinuz-lts "${ISO_ROOT}/boot/vmlinuz"
 
-# Strip giant graphics/telecom firmware to keep BootOS under ~100MB while keeping ethernet & Wi-Fi
-echo "--> Optimizing firmware footprint (keeping network & storage drivers)..."
-rm -rf "${ROOTFS_DIR}/lib/firmware/amdgpu" 2>/dev/null || true
-rm -rf "${ROOTFS_DIR}/lib/firmware/radeon" 2>/dev/null || true
-rm -rf "${ROOTFS_DIR}/lib/firmware/nvidia" 2>/dev/null || true
-rm -rf "${ROOTFS_DIR}/lib/firmware/mellanox" 2>/dev/null || true
-rm -rf "${ROOTFS_DIR}/lib/firmware/netronome" 2>/dev/null || true
-rm -rf "${ROOTFS_DIR}/lib/firmware/qcom" 2>/dev/null || true
-rm -rf "${ROOTFS_DIR}/lib/firmware/liquidio" 2>/dev/null || true
+# Strip unneeded huge firmware (keep Intel/Realtek/Atheros Wi-Fi & Ethernet)
+echo "--> Optimizing firmware footprint to keep initramfs ultra-compact..."
+mkdir -p /tmp/fw_keep
+cp -r "${ROOTFS_DIR}/lib/firmware/intel" /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/rtlwifi" /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/ath"* /tmp/fw_keep/ 2>/dev/null || true
+rm -rf "${ROOTFS_DIR}/lib/firmware"/*
+mv /tmp/fw_keep/* "${ROOTFS_DIR}/lib/firmware"/ 2>/dev/null || true
+rm -rf /tmp/fw_keep "${ROOTFS_DIR}/var/cache/apk"/* "${ROOTFS_DIR}/boot/initramfs"*
 
 # 4. Create robust udhcpc default.script so DHCP sets IP and DNS properly
 mkdir -p "${ROOTFS_DIR}/usr/share/udhcpc"
@@ -110,7 +110,7 @@ cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
 ::sysinit:/sbin/rc boot
 ::wait:/sbin/rc default
 
-tty1::respawn:/usr/bin/setsid /sbin/cttyhack /usr/local/bin/bootos
+tty1::respawn:/usr/bin/setsid /bin/sh -c 'exec /usr/local/bin/bootos <> /dev/tty1 >&0 2>&1'
 tty2::respawn:/sbin/getty 38400 tty2
 tty3::respawn:/sbin/getty 38400 tty3
 
@@ -178,9 +178,19 @@ for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
     udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
 done
 
-# Clean console and start BootOS with full controlling TTY
+# Start BootOS with persistent loop & TTY
+export TERM=linux
+export HOME=/root
 clear
-exec setsid cttyhack /usr/local/bin/bootos
+while true; do
+    if [ -c /dev/tty1 ]; then
+        setsid /bin/sh -c 'exec /usr/local/bin/bootos' <> /dev/tty1 >&0 2>&1
+    else
+        setsid /bin/sh -c 'exec /usr/local/bin/bootos' <> /dev/console >&0 2>&1
+    fi
+    echo "BootOS finished. Restarting in 2 seconds..."
+    sleep 2
+done
 EOF
 chmod +x "${ROOTFS_DIR}/init"
 
@@ -202,37 +212,37 @@ cp /usr/lib/syslinux/modules/bios/libutil.c32 "${ISO_ROOT}/isolinux/" 2>/dev/nul
 cat <<'EOF' > "${ISO_ROOT}/isolinux/isolinux.cfg"
 UI menu.c32
 PROMPT 0
-TIMEOUT 50
+TIMEOUT 30
 DEFAULT bootos
 
 MENU TITLE BootOS - 100% DRAM Resident
 
 LABEL bootos
-  MENU LABEL ^1. Start BootOS (100% DRAM Mode - Safe for 2GB USB)
+  MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND quiet console=tty1 init=/init
+  APPEND console=tty0 console=tty1 init=/init
 
-LABEL bootos_debug
-  MENU LABEL ^2. Start BootOS (Verbose Debug Mode)
+LABEL bootos_quiet
+  MENU LABEL ^2. Start BootOS (Quiet Mode)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND console=tty1 init=/init
+  APPEND quiet console=tty0 console=tty1 init=/init
 EOF
 
 # 7. Configure GRUB (UEFI Boot)
 echo "--> Setting up GRUB for UEFI boot..."
 cat <<'EOF' > "${ISO_ROOT}/boot/grub/grub.cfg"
 set default="0"
-set timeout=5
+set timeout=3
 
 menuentry "BootOS (100% DRAM Mode)" {
-    linux /boot/vmlinuz quiet console=tty1 init=/init
+    linux /boot/vmlinuz console=tty0 console=tty1 init=/init
     initrd /boot/initramfs.gz
 }
 
-menuentry "BootOS (Verbose Mode)" {
-    linux /boot/vmlinuz console=tty1 init=/init
+menuentry "BootOS (Quiet Mode)" {
+    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init
     initrd /boot/initramfs.gz
 }
 EOF
@@ -267,3 +277,10 @@ echo "=========================================================="
 echo "✓ SUCCESS! BootOS ISO created successfully:"
 ls -lh "${OUTPUT_ISO}"
 echo "=========================================================="
+
+# Also sync to C:/Users/Victor/ISO/Other/bootos.iso if the directory exists
+TARGET_VM_DIR="/mnt/c/Users/Victor/ISO/Other"
+if [ -d "${TARGET_VM_DIR}" ]; then
+    echo "--> Syncing to ${TARGET_VM_DIR}/bootos.iso for VirtualBox..."
+    cp "${OUTPUT_ISO}" "${TARGET_VM_DIR}/bootos.iso"
+fi

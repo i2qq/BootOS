@@ -639,7 +639,7 @@ while true; do
     read -r choice
 
     case "$choice" in
-        1|"0"|"gh"|"github"|"star"|"*") github_release_os_installer ;;
+        1|"0"|"gh"|"github") github_release_os_installer ;;
         2) download_and_boot_lubuntu ;;
         3) download_and_boot_ubuntu ;;
         4) custom_os_downloader ;;
@@ -677,7 +677,7 @@ while true; do
             if command -v cttyhack >/dev/null 2>&1; then
                 setsid cttyhack /bin/sh
             else
-                /bin/sh -i
+                PS1='bootos:\w# ' /bin/sh -i
             fi
             echo -e "\nReturning to menu..."
             sleep 1
