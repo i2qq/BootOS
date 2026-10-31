@@ -180,20 +180,51 @@ boot_kexec() {
     echo -e "Initrd : $initrd_path"
     echo -e "Params : $cmdline"
 
+    LOADED=0
+    # 1. Try modern file-based syscall kexec -s -l (bypasses EPERM / lockdown)
     if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
-        kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline"
+        if kexec -s -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" 2>/dev/null; then
+            LOADED=1
+        fi
     else
-        kexec -l "$kernel_path" --command-line="$cmdline"
+        if kexec -s -l "$kernel_path" --command-line="$cmdline" 2>/dev/null; then
+            LOADED=1
+        fi
     fi
 
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Starting target operating system now!${RESET}"
-        sleep 2
+    # 2. Fallback to legacy syscall kexec -l
+    if [ $LOADED -eq 0 ]; then
+        if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
+            if kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" 2>/dev/null; then
+                LOADED=1
+            fi
+        else
+            if kexec -l "$kernel_path" --command-line="$cmdline" 2>/dev/null; then
+                LOADED=1
+            fi
+        fi
+    fi
+
+    # 3. Fallback with --force / --reset-vga
+    if [ $LOADED -eq 0 ]; then
+        echo -e "${YELLOW}Retrying with reset-vga flags...${RESET}"
+        if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
+            kexec -s -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" --reset-vga || \
+            kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline" --reset-vga
+            [ $? -eq 0 ] && LOADED=1
+        fi
+    fi
+
+    if [ $LOADED -eq 1 ]; then
+        echo -e "\n${GREEN}Starting target operating system now!${RESET}"
+        sleep 1
         kexec -e
     else
-        echo -e "${RED}Failed to load kernel into kexec!${RESET}"
+        echo -e "\n${RED}Failed to load kernel into kexec!${RESET}"
+        echo -e "${YELLOW}Tip: On UEFI/Lockdown systems, use Option [1] to flash the ISO directly to disk.${RESET}"
         echo "Press Enter to return..."
         read -r _
+        return 1
     fi
 }
 
@@ -578,8 +609,7 @@ github_release_os_installer() {
 
 download_and_boot_lubuntu() {
     show_banner
-    echo -e "${YELLOW}=== Download & Boot Lubuntu (Lightweight for Old PCs) ===${RESET}
-"
+    echo -e "${YELLOW}=== Download & Boot Lubuntu (Lightweight for Old PCs) ===${RESET}\n"
     if ! check_internet; then
         echo -e "${RED}Network is not ready! Setting up network first...${RESET}"
         setup_network
@@ -588,27 +618,52 @@ download_and_boot_lubuntu() {
     mkdir -p /tmp/target_os
     cd /tmp/target_os || exit 1
 
-    echo -e "${CYAN}Choose Lubuntu Mode:${RESET}"
+    echo -e "${CYAN}Select Lubuntu Release:${RESET}"
+    echo "  [1] Lubuntu 26.04 (Next-Gen Daily / Rolling)"
+    echo "  [2] Lubuntu 24.04.5 LTS (Noble Numbat - Long Term Support)"
+    echo "  [3] Back to Menu"
+    echo ""
+    echo -n "Select version [1-3]: "
+    read -r ver_choice
+
+    case "$ver_choice" in
+        1)
+            LUBUNTU_NAME="Lubuntu 26.04 (Next-Gen Daily)"
+            DEFAULT_LUBUNTU="https://cdimage.ubuntu.com/lubuntu/daily-live/current/pending-desktop-amd64.iso"
+            KERNEL_URL="https://cloud-images.ubuntu.com/daily/server/current/unpacked/vmlinuz-generic"
+            INITRD_URL="https://cloud-images.ubuntu.com/daily/server/current/unpacked/initrd-generic"
+            ;;
+        2)
+            LUBUNTU_NAME="Lubuntu 24.04.5 LTS Desktop"
+            DEFAULT_LUBUNTU="https://cdimage.ubuntu.com/lubuntu/releases/noble/release/lubuntu-24.04.5-desktop-amd64.iso"
+            KERNEL_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
+            INITRD_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
+            ;;
+        *)
+            return
+            ;;
+    esac
+
+    echo -e "\n${CYAN}Choose Mode for ${LUBUNTU_NAME}:${RESET}"
     echo "  [1] Flash Live ISO directly to Hard Drive / SSD (Recommended for install)"
     echo "  [2] Live ISO to RAM (Downloads full ~3.8 GB Live ISO into DRAM - needs >= 5 GB RAM)"
     echo "  [3] Fast Minimal Netboot (~45 MB - installs over internet)"
-    echo "  [4] Back to Menu"
+    echo "  [4] Back"
     echo ""
     echo -n "Select [1-4]: "
     read -r mode
 
     case "$mode" in
         1)
-            DEFAULT_LUBUNTU="https://cdimage.ubuntu.com/lubuntu/releases/noble/release/lubuntu-24.04.5-desktop-amd64.iso"
-            echo -e "\n${CYAN}Flash Lubuntu directly to storage drive:${RESET}"
+            echo -e "\n${CYAN}Flash ${LUBUNTU_NAME} directly to storage drive:${RESET}"
             if select_target_drive; then
-                flash_image_to_drive "$DEFAULT_LUBUNTU" "$SELECTED_DEV" "Lubuntu 24.04.5 LTS Desktop"
+                flash_image_to_drive "$DEFAULT_LUBUNTU" "$SELECTED_DEV" "$LUBUNTU_NAME"
             fi
             ;;
         2)
             get_ram_info
             if [ "$FREE_RAM" -lt 4500 ]; then
-                echo -e "${YELLOW}Warning: Lubuntu 24.04 Desktop ISO is ~3.8 GB. You have ${FREE_RAM} MB free RAM.${RESET}"
+                echo -e "${YELLOW}Warning: Lubuntu Desktop ISO is ~3.8 GB. You have ${FREE_RAM} MB free RAM.${RESET}"
                 echo -e "Storing a 3.8 GB ISO in RAM might cause an Out-Of-Memory freeze on low-RAM systems."
                 echo -e "Consider using Option [1] (Flash directly to drive)."
                 echo -n "Proceed anyway? (y/N): "
@@ -616,14 +671,13 @@ download_and_boot_lubuntu() {
                 [ "$proceed" != "y" ] && [ "$proceed" != "Y" ] && return
             fi
 
-            DEFAULT_LUBUNTU="https://cdimage.ubuntu.com/lubuntu/releases/noble/release/lubuntu-24.04.5-desktop-amd64.iso"
             echo -e "\nEnter Lubuntu ISO direct download URL:"
             echo -e "Default: ${CYAN}$DEFAULT_LUBUNTU${RESET}"
             echo -n "Press Enter to use default or paste custom URL: "
             read -r iso_url
             [ -z "$iso_url" ] && iso_url="$DEFAULT_LUBUNTU"
 
-            echo -e "\n${GREEN}Downloading Lubuntu ISO into RAM (/tmp/lubuntu.iso)...${RESET}"
+            echo -e "\n${GREEN}Downloading ${LUBUNTU_NAME} into RAM (/tmp/lubuntu.iso)...${RESET}"
             rm -f /tmp/lubuntu.iso
             curl -# -f -L -o /tmp/lubuntu.iso "$iso_url"
 
@@ -646,10 +700,7 @@ download_and_boot_lubuntu() {
             fi
             ;;
         3)
-            echo -e "${GREEN}Downloading Ubuntu/Lubuntu Minimal Netboot kernel & initrd (~45 MB)...${RESET}"
-            KERNEL_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
-            INITRD_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
-
+            echo -e "${GREEN}Downloading ${LUBUNTU_NAME} Netboot kernel & initrd (~45 MB)...${RESET}"
             curl -# -f -L -o /tmp/target_os/vmlinuz "$KERNEL_URL"
             curl -# -f -L -o /tmp/target_os/initrd.gz "$INITRD_URL"
 
@@ -668,8 +719,7 @@ download_and_boot_lubuntu() {
 
 download_and_boot_ubuntu() {
     show_banner
-    echo -e "${YELLOW}=== Download & Boot Ubuntu 24.04 LTS ===${RESET}
-"
+    echo -e "${YELLOW}=== Download & Boot Ubuntu (26.04 & 24.04 LTS) ===${RESET}\n"
     if ! check_internet; then
         setup_network
     fi
@@ -677,10 +727,36 @@ download_and_boot_ubuntu() {
     mkdir -p /tmp/target_os
     cd /tmp/target_os || exit 1
 
-    echo -e "${CYAN}Select Ubuntu Option:${RESET}"
+    echo -e "${CYAN}Select Ubuntu Release:${RESET}"
+    echo "  [1] Ubuntu 26.04 (Next-Gen Daily / Rolling Release)"
+    echo "  [2] Ubuntu 24.04.5 LTS (Noble Numbat - Long Term Support)"
+    echo "  [3] Back to Menu"
+    echo ""
+    echo -n "Select version [1-3]: "
+    read -r ver_choice
+
+    case "$ver_choice" in
+        1)
+            UBUNTU_NAME="Ubuntu 26.04 (Next-Gen Daily)"
+            DEFAULT_URL="https://cdimage.ubuntu.com/daily-live/current/pending-desktop-amd64.iso"
+            KERNEL_URL="https://cloud-images.ubuntu.com/daily/server/current/unpacked/vmlinuz-generic"
+            INITRD_URL="https://cloud-images.ubuntu.com/daily/server/current/unpacked/initrd-generic"
+            ;;
+        2)
+            UBUNTU_NAME="Ubuntu 24.04.5.1 LTS Desktop"
+            DEFAULT_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
+            KERNEL_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
+            INITRD_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
+            ;;
+        *)
+            return
+            ;;
+    esac
+
+    echo -e "\n${CYAN}Choose Mode for ${UBUNTU_NAME}:${RESET}"
     echo "  [1] Flash Live Desktop ISO directly to Hard Drive / SSD (Recommended for install)"
     echo "  [2] Live Desktop ISO to RAM (~5.8 GB ISO in DRAM - needs >= 7 GB RAM)"
-    echo "  [3] Ubuntu Noble Minimal Netboot (~45 MB - installs over internet)"
+    echo "  [3] Minimal Netboot Installer (~45-50 MB - installs over internet in DRAM)"
     echo "  [4] Back"
     echo ""
     echo -n "Choice [1-4]: "
@@ -688,10 +764,9 @@ download_and_boot_ubuntu() {
 
     case "$ub_choice" in
         1)
-            DEFAULT_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
-            echo -e "\n${CYAN}Flash Ubuntu directly to storage drive:${RESET}"
+            echo -e "\n${CYAN}Flash ${UBUNTU_NAME} directly to storage drive:${RESET}"
             if select_target_drive; then
-                flash_image_to_drive "$DEFAULT_URL" "$SELECTED_DEV" "Ubuntu 24.04.5.1 LTS Desktop"
+                flash_image_to_drive "$DEFAULT_URL" "$SELECTED_DEV" "$UBUNTU_NAME"
             fi
             ;;
         2)
@@ -705,7 +780,6 @@ download_and_boot_ubuntu() {
                 [ "$proceed" != "y" ] && [ "$proceed" != "Y" ] && return
             fi
 
-            DEFAULT_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
             echo -e "\nEnter Ubuntu Desktop ISO direct URL (or press Enter for default):"
             echo -e "Default: ${CYAN}$DEFAULT_URL${RESET}"
             echo -n "URL: "
@@ -713,6 +787,7 @@ download_and_boot_ubuntu() {
             [ -z "$custom_url" ] && custom_url="$DEFAULT_URL"
 
             rm -f /tmp/ubuntu.iso
+            echo -e "\n${GREEN}Downloading ${UBUNTU_NAME} into RAM (/tmp/ubuntu.iso)...${RESET}"
             curl -# -f -L -o /tmp/ubuntu.iso "$custom_url"
             if [ -s /tmp/ubuntu.iso ]; then
                 rm -rf /tmp/ubuntu_extracted
@@ -730,11 +805,9 @@ download_and_boot_ubuntu() {
             fi
             ;;
         3)
-            echo -e "${GREEN}Downloading Ubuntu Noble Netboot kernel & initrd (~45 MB)...${RESET}"
-            KERNEL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
-            INITRD="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
-            curl -# -f -L -o /tmp/target_os/vmlinuz "$KERNEL"
-            curl -# -f -L -o /tmp/target_os/initrd "$INITRD"
+            echo -e "${GREEN}Downloading ${UBUNTU_NAME} Netboot kernel & initrd (~45-50 MB)...${RESET}"
+            curl -# -f -L -o /tmp/target_os/vmlinuz "$KERNEL_URL"
+            curl -# -f -L -o /tmp/target_os/initrd "$INITRD_URL"
             if [ -s /tmp/target_os/vmlinuz ] && [ -s /tmp/target_os/initrd ]; then
                 boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd" "console=tty1 root=/dev/ram0 rw"
             else
@@ -786,10 +859,11 @@ online_netboot_menu() {
     echo -e "Select an official online netboot installer to boot directly in RAM:"
     echo -e "  ${GREEN}[1]${RESET} Debian 12 (Bookworm) Netboot Installer (~40 MB - Fast)"
     echo -e "  ${GREEN}[2]${RESET} Alpine Linux Live Netboot (~15 MB - Ultra-lightweight)"
-    echo -e "  ${GREEN}[3]${RESET} Ubuntu 24.04 LTS Minimal Netboot (~65 MB)"
-    echo -e "  ${GREEN}[4]${RESET} Back to Menu"
+    echo -e "  ${GREEN}[3]${RESET} Ubuntu 26.04 (Next-Gen Daily) Minimal Netboot (~50 MB)"
+    echo -e "  ${GREEN}[4]${RESET} Ubuntu 24.04 LTS Minimal Netboot (~65 MB)"
+    echo -e "  ${GREEN}[5]${RESET} Back to Menu"
     echo ""
-    echo -n "Select option [1-4]: "
+    echo -n "Select option [1-5]: "
     read -r nb_choice
 
     mkdir -p /tmp/netboot
@@ -817,6 +891,17 @@ online_netboot_menu() {
             fi
             ;;
         3)
+            echo -e "\n${GREEN}Downloading Ubuntu 26.04 (Next-Gen Daily) Netboot Installer...${RESET}"
+            curl -L -o /tmp/netboot/vmlinuz "https://cloud-images.ubuntu.com/daily/server/current/unpacked/vmlinuz-generic"
+            curl -L -o /tmp/netboot/initrd.gz "https://cloud-images.ubuntu.com/daily/server/current/unpacked/initrd-generic"
+            if [ -s /tmp/netboot/vmlinuz ] && [ -s /tmp/netboot/initrd.gz ]; then
+                boot_kexec "/tmp/netboot/vmlinuz" "/tmp/netboot/initrd.gz" "console=tty1 root=/dev/ram0 rw"
+            else
+                echo -e "${RED}Download failed!${RESET}"
+                read -r _
+            fi
+            ;;
+        4)
             echo -e "\n${GREEN}Downloading Ubuntu 24.04 LTS Netboot Installer...${RESET}"
             curl -L -o /tmp/netboot/vmlinuz "https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
             curl -L -o /tmp/netboot/initrd.gz "https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
@@ -1159,8 +1244,8 @@ while true; do
     echo -e " ${BOLD}Main Menu:${RESET}"
     echo -e "  ${GREEN}[1]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
     echo -e "  ${GREEN}[2]${RESET} ${BOLD}Launch BootOS File Explorer (GUI)${RESET}"
-    echo -e "  ${GREEN}[3]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
-    echo -e "  ${GREEN}[4]${RESET} Download & Boot Ubuntu 24.04 LTS"
+    echo -e "  ${GREEN}[3]${RESET} Download & Boot Lubuntu (26.04 & 24.04 LTS)"
+    echo -e "  ${GREEN}[4]${RESET} Download & Boot Ubuntu (26.04 & 24.04 LTS)"
     echo -e "  ${GREEN}[5]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
     echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
     echo -e "  ${GREEN}[7]${RESET} Download & Boot Custom Kernel/Initrd"

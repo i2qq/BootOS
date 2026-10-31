@@ -374,13 +374,13 @@ LABEL bootos
   MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND console=tty0 console=tty1 init=/init
+  APPEND console=tty0 console=tty1 init=/init lockdown=none
 
 LABEL bootos_quiet
   MENU LABEL ^2. Start BootOS (Quiet Mode)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND quiet console=tty0 console=tty1 init=/init
+  APPEND quiet console=tty0 console=tty1 init=/init lockdown=none
 EOF
 
 # 7. Configure GRUB (UEFI Boot)
@@ -390,12 +390,12 @@ set default="0"
 set timeout=3
 
 menuentry "BootOS (100% DRAM Mode)" {
-    linux /boot/vmlinuz console=tty0 console=tty1 init=/init
+    linux /boot/vmlinuz console=tty0 console=tty1 init=/init lockdown=none
     initrd /boot/initramfs.gz
 }
 
 menuentry "BootOS (Quiet Mode)" {
-    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init
+    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init lockdown=none
     initrd /boot/initramfs.gz
 }
 EOF

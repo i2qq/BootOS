@@ -36,6 +36,9 @@ if (Test-Path "$workspacePath\bootos.iso") {
         & gcc -O2 -mwindows "$workspacePath\src\bootos-flasher-gui.c" -o "$workspacePath\bootos-flasher-gui.exe" -lcomctl32 -lcomdlg32
         Copy-Item "$workspacePath\bootos-flasher-gui.exe" "$workspacePath\bootos-flasher.exe" -Force
         Copy-Item "$workspacePath\bootos-flasher-gui.exe" "$workspacePath\bootos.exe" -Force
+        if (Test-Path "$workspacePath\scripts\sign-binaries.ps1") {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File "$workspacePath\scripts\sign-binaries.ps1"
+        }
     }
 
     Write-Host "`nTo flash to USB (No Rufus required):" -ForegroundColor Cyan
