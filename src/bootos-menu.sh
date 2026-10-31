@@ -927,6 +927,26 @@ Enter GitHub repository or release URL (e.g. ${CYAN}i2qq/BootOS${RESET}):"
     esac
 }
 
+launch_file_explorer() {
+    show_banner
+    echo -e "${YELLOW}=== Launch Windows 11 File Explorer (GUI) ===${RESET}\n"
+    echo -e "${GREEN}Starting BootOS File Explorer (Windows 11 Fluent UI)...${RESET}"
+    echo "Tip: Fully functional tabs, breadcrumb address bar, drive meters, and real file operations."
+    echo "Click Close ([X]) or press Alt+F4 to return to BootOS."
+    sleep 1
+
+    if [ -x /usr/local/bin/explorer ]; then
+        /usr/local/bin/explorer
+    elif [ -f /usr/local/share/bootos-explorer/server.py ]; then
+        python3 /usr/local/share/bootos-explorer/server.py >/dev/null 2>&1 &
+        sleep 1
+        browser "http://127.0.0.1:54321/"
+    else
+        echo -e "${RED}File Explorer files not found!${RESET}"
+        sleep 2
+    fi
+}
+
 launch_browser() {
     show_banner
     echo -e "${YELLOW}=== Launch Chromium Web Browser (GUI) ===${RESET}\n"
@@ -1140,31 +1160,33 @@ while true; do
     show_banner
     echo -e " ${BOLD}Main Menu:${RESET}"
     echo -e "  ${GREEN}[1]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
-    echo -e "  ${GREEN}[2]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
-    echo -e "  ${GREEN}[3]${RESET} Download & Boot Ubuntu 24.04 LTS"
-    echo -e "  ${GREEN}[4]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
-    echo -e "  ${GREEN}[5]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
-    echo -e "  ${GREEN}[6]${RESET} Download & Boot Custom Kernel/Initrd"
-    echo -e "  ${GREEN}[7]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
-    echo -e "  ${GREEN}[8]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
-    echo -e "  ${GREEN}[9]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
-    echo -e "  ${GREEN}[10]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
-    echo -e "  ${GREEN}[11]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
-    echo -e "  ${GREEN}[12]${RESET} Power Off"
+    echo -e "  ${GREEN}[2]${RESET} ${BOLD}Launch Windows 11 File Explorer (GUI)${RESET}"
+    echo -e "  ${GREEN}[3]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
+    echo -e "  ${GREEN}[4]${RESET} Download & Boot Ubuntu 24.04 LTS"
+    echo -e "  ${GREEN}[5]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
+    echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
+    echo -e "  ${GREEN}[7]${RESET} Download & Boot Custom Kernel/Initrd"
+    echo -e "  ${GREEN}[8]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
+    echo -e "  ${GREEN}[9]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
+    echo -e "  ${GREEN}[10]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
+    echo -e "  ${GREEN}[11]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
+    echo -e "  ${GREEN}[12]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
+    echo -e "  ${GREEN}[13]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [1-12]: "
+    echo -n " Please select an option [1-13]: "
     read -r choice
 
     case "$choice" in
         1|"0"|"gh"|"github") github_release_os_installer ;;
-        2) download_and_boot_lubuntu ;;
-        3) download_and_boot_ubuntu ;;
-        4|"browser"|"chromium"|"web") launch_browser ;;
-        5) flash_drive_utility ;;
-        6) custom_os_downloader ;;
-        7|"net"|"network") setup_network ;;
-        8) online_netboot_menu ;;
-        9|"sh"|"shell"|"bash")
+        2|"explorer"|"files") launch_file_explorer ;;
+        3) download_and_boot_lubuntu ;;
+        4) download_and_boot_ubuntu ;;
+        5|"browser"|"chromium"|"web") launch_browser ;;
+        6) flash_drive_utility ;;
+        7) custom_os_downloader ;;
+        8|"net"|"network") setup_network ;;
+        9) online_netboot_menu ;;
+        10|"sh"|"shell"|"bash")
             echo -e "\n${CYAN}======================================================${RESET}"
             echo -e " ${BOLD}BootOS Root Terminal Shell (GNU Bash)${RESET}"
             echo -e " Full Shell Commands: ${GREEN}sudo${RESET}, ${GREEN}echo${RESET}, ${GREEN}mkdir${RESET}, ${GREEN}touch${RESET}, ${GREEN}cat${RESET}, ${GREEN}nano${RESET}, ${GREEN}grep${RESET}"
@@ -1181,15 +1203,15 @@ while true; do
             echo -e "\nReturning to menu..."
             sleep 1
             ;;
-        10|"save"|"persist") save_persistent_state ;;
-        11|"reboot")
+        11|"save"|"persist") save_persistent_state ;;
+        12|"reboot")
             echo -e "\n${YELLOW}Preparing to reboot...${RESET}"
             save_persistent_state "auto"
             echo -e "${YELLOW}Rebooting system...${RESET}"
             sleep 1
             reboot
             ;;
-        12|"poweroff"|"shutdown")
+        13|"poweroff"|"shutdown")
             echo -e "\n${YELLOW}Shutting down...${RESET}"
             poweroff
             ;;

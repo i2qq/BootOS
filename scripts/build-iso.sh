@@ -85,7 +85,8 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     sed \
     gawk \
     nano \
-    less
+    less \
+    python3
 "
 
 # Copy kernel out to ISO boot folder
@@ -142,6 +143,17 @@ cp "${WORKSPACE_DIR}/src/browser-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/brows
 chmod +x "${ROOTFS_DIR}/usr/local/bin/browser"
 ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-launch"
 ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-browser"
+
+# Install BootOS Windows 11 File Explorer
+echo "--> Installing BootOS Windows 11 File Explorer..."
+mkdir -p "${ROOTFS_DIR}/usr/local/share/bootos-explorer"
+cp -r "${WORKSPACE_DIR}/src/explorer"/* "${ROOTFS_DIR}/usr/local/share/bootos-explorer/"
+cp "${WORKSPACE_DIR}/src/explorer-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/explorer"
+chmod +x "${ROOTFS_DIR}/usr/local/bin/explorer"
+chmod +x "${ROOTFS_DIR}/usr/local/share/bootos-explorer/server.py"
+ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/local/bin/files"
+ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/bin/explorer"
+
 mkdir -p "${ROOTFS_DIR}/tmp/.X11-unix" "${ROOTFS_DIR}/var/log"
 chmod 1777 "${ROOTFS_DIR}/tmp/.X11-unix"
 
@@ -175,6 +187,8 @@ alias la='ls -A --color=auto'
 alias l='ls -CF --color=auto'
 alias grep='grep --color=auto'
 alias menu='/usr/local/bin/bootos'
+alias explorer='/usr/local/bin/explorer'
+alias files='/usr/local/bin/explorer'
 
 # Source bash completion if available
 [ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion 2>/dev/null
