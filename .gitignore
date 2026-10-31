@@ -1,5 +1,8 @@
 # Ignore built ISO images to prevent repo bloat / GitHub 100MB file limit
 *.iso
 *.img
+*.gz
 /build/
 /tmp/
+/bootloader/boot/initramfs.gz
+/bootloader/boot/vmlinuz

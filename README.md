@@ -37,7 +37,7 @@ BootOS includes a standalone native Windows GUI flasher and runner built right i
 ### Method 2: Execute BootOS Directly on Windows (Virtual Sandbox Mode)
 Want to run or test BootOS directly on Windows without rebooting?
 1. Double-click **`bootos-run.bat`** (or select Option `[2]` inside `bootos-flasher.exe`).
-2. BootOS will immediately launch inside an interactive VirtualBox or QEMU window directly on your desktop!
+2. BootOS will immediately launch inside an interactive Oracle VirtualBox window directly on your desktop!
 
 ### Alternative: Using Rufus (Ensure DD Image Mode)
 1. Download [Rufus](https://rufus.ie) (portable version is fine).

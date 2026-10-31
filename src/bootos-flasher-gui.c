@@ -8,17 +8,19 @@
 #include <string.h>
 #include <shellapi.h>
 
-#define ID_BTN_BROWSE     101
-#define ID_COMBO_DRIVES   102
-#define ID_BTN_REFRESH    103
-#define ID_BTN_FLASH      104
-#define ID_BTN_RUNVM      105
-#define ID_BTN_EXIT       106
-#define ID_PROGRESS       107
-#define ID_EDIT_ISO       108
-#define ID_STATUS_LABEL   109
-#define ID_STATS_LABEL    110
-#define ID_TIMER_PROGRESS 201
+#define ID_BTN_BROWSE       101
+#define ID_COMBO_DRIVES     102
+#define ID_BTN_REFRESH      103
+#define ID_BTN_MAKE_EXEC    104
+#define ID_BTN_RAW_FLASH    105
+#define ID_BTN_RUN_VBOX     106
+#define ID_BTN_EXIT         107
+#define ID_PROGRESS         108
+#define ID_EDIT_ISO         109
+#define ID_STATUS_LABEL     110
+#define ID_STATS_LABEL      111
+#define ID_CHK_COPY_ISO     112
+#define ID_TIMER_PROGRESS   201
 
 #define BUFFER_SIZE (1024 * 1024) // 1 MB chunk
 
@@ -36,7 +38,10 @@ typedef struct {
 typedef struct {
     HWND hWnd;
     char isoPath[MAX_PATH];
+    char targetDriveLetter;
     int diskNumber;
+    BOOL isRawFlash;
+    BOOL copyIsoFile;
     volatile BOOL isRunning;
     volatile int percent;
     volatile double writtenMB;
@@ -44,17 +49,18 @@ typedef struct {
     volatile double speedMBps;
     volatile BOOL success;
     char errorMsg[256];
-} FlashWorkerData;
+} WorkerData;
 
-// Global state
 static HINSTANCE g_hInstance = NULL;
 static HWND g_hMainWnd = NULL;
 static HWND g_hEditIso = NULL;
 static HWND g_hComboDrives = NULL;
 static HWND g_hBtnBrowse = NULL;
 static HWND g_hBtnRefresh = NULL;
-static HWND g_hBtnFlash = NULL;
-static HWND g_hBtnRunVm = NULL;
+static HWND g_hBtnMakeExec = NULL;
+static HWND g_hBtnRawFlash = NULL;
+static HWND g_hBtnRunVBox = NULL;
+static HWND g_hChkCopyIso = NULL;
 static HWND g_hProgress = NULL;
 static HWND g_hStatusLabel = NULL;
 static HWND g_hStatsLabel = NULL;
@@ -65,7 +71,8 @@ static HFONT g_hFontHeader = NULL;
 static GuiDriveInfo g_drives[32];
 static int g_driveCount = 0;
 static char g_isoPath[MAX_PATH] = "";
-static FlashWorkerData g_worker;
+static char g_appDir[MAX_PATH] = "";
+static WorkerData g_worker;
 
 BOOL IsUserAdmin(void) {
     BOOL isAdmin = FALSE;
@@ -138,7 +145,6 @@ int ScanDrives(GuiDriveInfo *drives, int maxDrives) {
                 else if (desc->BusType == BusTypeNvme) snprintf(drives[count].busType, sizeof(drives[count].busType), "NVMe");
                 else snprintf(drives[count].busType, sizeof(drives[count].busType), "Drive");
 
-                // Get drive size
                 DISK_GEOMETRY_EX geom;
                 DWORD ret = 0;
                 drives[count].sizeGB = 0.0;
@@ -201,8 +207,52 @@ void DismountDriveVolumes(int diskNumber) {
     }
 }
 
-DWORD WINAPI FlashWorkerThread(LPVOID lpParam) {
-    FlashWorkerData *data = (FlashWorkerData *)lpParam;
+static BOOL CopyFileWithProgress(const char *src, const char *dst, WorkerData *data, double startMB, double fileTotalMB) {
+    HANDLE hSrc = CreateFileA(src, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hSrc == INVALID_HANDLE_VALUE) return FALSE;
+
+    HANDLE hDst = CreateFileA(dst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hDst == INVALID_HANDLE_VALUE) {
+        CloseHandle(hSrc);
+        return FALSE;
+    }
+
+    BYTE *buf = (BYTE *)malloc(BUFFER_SIZE);
+    if (!buf) {
+        CloseHandle(hSrc);
+        CloseHandle(hDst);
+        return FALSE;
+    }
+
+    DWORD r = 0, w = 0;
+    LONGLONG fileCopied = 0;
+    DWORD startTime = GetTickCount();
+
+    while (ReadFile(hSrc, buf, BUFFER_SIZE, &r, NULL) && r > 0) {
+        if (!WriteFile(hDst, buf, r, &w, NULL) || w != r) {
+            free(buf);
+            CloseHandle(hSrc);
+            CloseHandle(hDst);
+            return FALSE;
+        }
+        fileCopied += w;
+        data->writtenMB = startMB + ((double)fileCopied / (1024.0 * 1024.0));
+        DWORD el = GetTickCount() - startTime;
+        if (el == 0) el = 1;
+        data->speedMBps = ((double)fileCopied / (1024.0 * 1024.0)) / ((double)el / 1000.0);
+        data->percent = (int)((data->writtenMB * 100.0) / (data->totalMB > 0 ? data->totalMB : 1.0));
+        if (data->percent > 99) data->percent = 99;
+    }
+
+    FlushFileBuffers(hDst);
+    free(buf);
+    CloseHandle(hSrc);
+    CloseHandle(hDst);
+    return TRUE;
+}
+
+DWORD WINAPI WorkerThread(LPVOID lpParam) {
+    WorkerData *data = (WorkerData *)lpParam;
     data->isRunning = TRUE;
     data->percent = 0;
     data->writtenMB = 0;
@@ -210,81 +260,157 @@ DWORD WINAPI FlashWorkerThread(LPVOID lpParam) {
     data->success = FALSE;
     data->errorMsg[0] = '\0';
 
-    HANDLE hIso = CreateFileA(data->isoPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (hIso == INVALID_HANDLE_VALUE) {
-        snprintf(data->errorMsg, sizeof(data->errorMsg), "Could not open ISO file (Error %lu)", GetLastError());
-        data->isRunning = FALSE;
-        return 1;
-    }
-
-    LARGE_INTEGER isoSize;
-    if (!GetFileSizeEx(hIso, &isoSize)) {
-        snprintf(data->errorMsg, sizeof(data->errorMsg), "Could not read ISO file size.");
-        CloseHandle(hIso);
-        data->isRunning = FALSE;
-        return 1;
-    }
-    data->totalMB = (double)isoSize.QuadPart / (1024.0 * 1024.0);
-
-    DismountDriveVolumes(data->diskNumber);
-
-    char diskPath[64];
-    snprintf(diskPath, sizeof(diskPath), "\\\\.\\PhysicalDrive%d", data->diskNumber);
-    HANDLE hDisk = CreateFileA(diskPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (hDisk == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        if (err == ERROR_ACCESS_DENIED) {
-            snprintf(data->errorMsg, sizeof(data->errorMsg), "Access Denied: Please run as Administrator.");
-        } else {
-            snprintf(data->errorMsg, sizeof(data->errorMsg), "Could not open target drive %s (Error %lu)", diskPath, err);
+    if (data->isRawFlash) {
+        // Raw DD Hybrid Flash
+        HANDLE hIso = CreateFileA(data->isoPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (hIso == INVALID_HANDLE_VALUE) {
+            snprintf(data->errorMsg, sizeof(data->errorMsg), "Could not open ISO file (Error %lu)", GetLastError());
+            data->isRunning = FALSE;
+            return 1;
         }
-        CloseHandle(hIso);
-        data->isRunning = FALSE;
-        return 1;
-    }
+        LARGE_INTEGER isoSize;
+        GetFileSizeEx(hIso, &isoSize);
+        data->totalMB = (double)isoSize.QuadPart / (1024.0 * 1024.0);
 
-    BYTE *buffer = (BYTE *)malloc(BUFFER_SIZE);
-    if (!buffer) {
-        snprintf(data->errorMsg, sizeof(data->errorMsg), "Memory allocation failed.");
-        CloseHandle(hDisk);
-        CloseHandle(hIso);
-        data->isRunning = FALSE;
-        return 1;
-    }
+        DismountDriveVolumes(data->diskNumber);
 
-    DWORD bytesRead = 0, bytesWritten = 0;
-    LONGLONG totalWritten = 0;
-    DWORD startTime = GetTickCount();
-
-    while (ReadFile(hIso, buffer, BUFFER_SIZE, &bytesRead, NULL) && bytesRead > 0) {
-        if (!WriteFile(hDisk, buffer, bytesRead, &bytesWritten, NULL) || bytesWritten != bytesRead) {
-            snprintf(data->errorMsg, sizeof(data->errorMsg), "Write failure at offset %lld (Error %lu)", totalWritten, GetLastError());
-            free(buffer);
-            CloseHandle(hDisk);
+        char diskPath[64];
+        snprintf(diskPath, sizeof(diskPath), "\\\\.\\PhysicalDrive%d", data->diskNumber);
+        HANDLE hDisk = CreateFileA(diskPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        if (hDisk == INVALID_HANDLE_VALUE) {
+            snprintf(data->errorMsg, sizeof(data->errorMsg), "Access Denied: Please run as Administrator.");
             CloseHandle(hIso);
             data->isRunning = FALSE;
             return 1;
         }
 
-        totalWritten += bytesWritten;
-        data->writtenMB = (double)totalWritten / (1024.0 * 1024.0);
-        DWORD elapsedMs = GetTickCount() - startTime;
-        if (elapsedMs == 0) elapsedMs = 1;
-        data->speedMBps = data->writtenMB / ((double)elapsedMs / 1000.0);
-        data->percent = (int)((totalWritten * 100) / isoSize.QuadPart);
+        BYTE *buf = (BYTE *)malloc(BUFFER_SIZE);
+        DWORD r = 0, w = 0;
+        LONGLONG total = 0;
+        DWORD st = GetTickCount();
+
+        while (ReadFile(hIso, buf, BUFFER_SIZE, &r, NULL) && r > 0) {
+            if (!WriteFile(hDisk, buf, r, &w, NULL) || w != r) {
+                snprintf(data->errorMsg, sizeof(data->errorMsg), "Write error to physical drive.");
+                free(buf);
+                CloseHandle(hDisk);
+                CloseHandle(hIso);
+                data->isRunning = FALSE;
+                return 1;
+            }
+            total += w;
+            data->writtenMB = (double)total / (1024.0 * 1024.0);
+            DWORD el = GetTickCount() - st;
+            if (el == 0) el = 1;
+            data->speedMBps = data->writtenMB / ((double)el / 1000.0);
+            data->percent = (int)((total * 100) / isoSize.QuadPart);
+        }
+
+        FlushFileBuffers(hDisk);
+        free(buf);
+        CloseHandle(hDisk);
+        CloseHandle(hIso);
+
+        HANDLE hRefresh = CreateFileA(diskPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        if (hRefresh != INVALID_HANDLE_VALUE) {
+            DWORD ret = 0;
+            DeviceIoControl(hRefresh, IOCTL_DISK_UPDATE_PROPERTIES, NULL, 0, NULL, 0, &ret, NULL);
+            CloseHandle(hRefresh);
+        }
+
+        data->percent = 100;
+        data->success = TRUE;
+        data->isRunning = FALSE;
+        return 0;
     }
 
-    FlushFileBuffers(hDisk);
-    free(buffer);
-    CloseHandle(hDisk);
-    CloseHandle(hIso);
+    // =========================================================================
+    // Rufus-Style Mode: Make USB Executable while remaining File Explorer Ready
+    // =========================================================================
+    char driveRoot[16];
+    snprintf(driveRoot, sizeof(driveRoot), "%c:\\", data->targetDriveLetter);
 
-    // Refresh partition table
-    HANDLE hRefresh = CreateFileA(diskPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (hRefresh != INVALID_HANDLE_VALUE) {
-        DWORD ret = 0;
-        DeviceIoControl(hRefresh, IOCTL_DISK_UPDATE_PROPERTIES, NULL, 0, NULL, 0, &ret, NULL);
-        CloseHandle(hRefresh);
+    // 1. Create bootloader directory tree
+    char dirEfi[MAX_PATH], dirGrub[MAX_PATH], dirBoot[MAX_PATH];
+    snprintf(dirEfi, sizeof(dirEfi), "%c:\\EFI\\BOOT", data->targetDriveLetter);
+    snprintf(dirBoot, sizeof(dirBoot), "%c:\\boot", data->targetDriveLetter);
+    snprintf(dirGrub, sizeof(dirGrub), "%c:\\boot\\grub", data->targetDriveLetter);
+
+    CreateDirectoryA(dirBoot, NULL);
+    CreateDirectoryA(dirGrub, NULL);
+    char dirEfiBase[MAX_PATH];
+    snprintf(dirEfiBase, sizeof(dirEfiBase), "%c:\\EFI", data->targetDriveLetter);
+    CreateDirectoryA(dirEfiBase, NULL);
+    CreateDirectoryA(dirEfi, NULL);
+
+    // Calculate total size to copy
+    double totalBytes = 0;
+    char srcEfi[MAX_PATH], srcVmlinuz[MAX_PATH], srcInitrd[MAX_PATH];
+    snprintf(srcEfi, sizeof(srcEfi), "%sbootloader\\EFI\\BOOT\\BOOTX64.EFI", g_appDir);
+    snprintf(srcVmlinuz, sizeof(srcVmlinuz), "%sbootloader\\boot\\vmlinuz", g_appDir);
+    snprintf(srcInitrd, sizeof(srcInitrd), "%sbootloader\\boot\\initramfs.gz", g_appDir);
+
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (GetFileAttributesExA(srcEfi, GetFileExInfoStandard, &fad)) {
+        totalBytes += ((LONGLONG)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+    }
+    if (GetFileAttributesExA(srcVmlinuz, GetFileExInfoStandard, &fad)) {
+        totalBytes += ((LONGLONG)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+    }
+    if (GetFileAttributesExA(srcInitrd, GetFileExInfoStandard, &fad)) {
+        totalBytes += ((LONGLONG)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+    }
+    if (data->copyIsoFile && GetFileAttributesExA(data->isoPath, GetFileExInfoStandard, &fad)) {
+        totalBytes += ((LONGLONG)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+    }
+    data->totalMB = totalBytes / (1024.0 * 1024.0);
+
+    // 2. Install BOOTX64.EFI
+    char dstEfi[MAX_PATH];
+    snprintf(dstEfi, sizeof(dstEfi), "%c:\\EFI\\BOOT\\BOOTX64.EFI", data->targetDriveLetter);
+    CopyFileWithProgress(srcEfi, dstEfi, data, 0, 6.2);
+
+    // 3. Write grub.cfg configured for loopback bootos.iso AND direct kernel boot
+    char dstGrubCfg[MAX_PATH];
+    snprintf(dstGrubCfg, sizeof(dstGrubCfg), "%c:\\boot\\grub\\grub.cfg", data->targetDriveLetter);
+    FILE *fCfg = fopen(dstGrubCfg, "w");
+    if (fCfg) {
+        fprintf(fCfg,
+            "set default=\"0\"\n"
+            "set timeout=5\n\n"
+            "# 1. Direct Kernel Boot (100%% DRAM Resident)\n"
+            "menuentry \"BootOS (Fast DRAM Boot)\" {\n"
+            "    search --no-floppy --set=root --file /boot/vmlinuz\n"
+            "    linux /boot/vmlinuz console=tty0 console=tty1 init=/init\n"
+            "    initrd /boot/initramfs.gz\n"
+            "}\n\n"
+            "# 2. Loopback ISO Boot (Copy bootos.iso here via File Manager)\n"
+            "menuentry \"BootOS (Execute bootos.iso in DRAM)\" {\n"
+            "    search --no-floppy --set=root --file /bootos.iso\n"
+            "    loopback loop ($root)/bootos.iso\n"
+            "    linux (loop)/boot/vmlinuz console=tty0 console=tty1 init=/init\n"
+            "    initrd (loop)/boot/initramfs.gz\n"
+            "}\n\n"
+            "menuentry \"BootOS (Quiet Mode)\" {\n"
+            "    search --no-floppy --set=root --file /boot/vmlinuz\n"
+            "    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init\n"
+            "    initrd /boot/initramfs.gz\n"
+            "}\n");
+        fclose(fCfg);
+    }
+
+    // 4. Install kernel & initramfs
+    char dstVmlinuz[MAX_PATH], dstInitrd[MAX_PATH];
+    snprintf(dstVmlinuz, sizeof(dstVmlinuz), "%c:\\boot\\vmlinuz", data->targetDriveLetter);
+    snprintf(dstInitrd, sizeof(dstInitrd), "%c:\\boot\\initramfs.gz", data->targetDriveLetter);
+    CopyFileWithProgress(srcVmlinuz, dstVmlinuz, data, data->writtenMB, 11.0);
+    CopyFileWithProgress(srcInitrd, dstInitrd, data, data->writtenMB, 391.0);
+
+    // 5. If copy ISO requested, copy bootos.iso to root of USB
+    if (data->copyIsoFile) {
+        char dstIso[MAX_PATH];
+        snprintf(dstIso, sizeof(dstIso), "%c:\\bootos.iso", data->targetDriveLetter);
+        CopyFileWithProgress(data->isoPath, dstIso, data, data->writtenMB, data->totalMB - data->writtenMB);
     }
 
     data->percent = 100;
@@ -301,7 +427,6 @@ void RefreshDriveList(void) {
     int itemsAdded = 0;
 
     for (int i = 0; i < g_driveCount; i++) {
-        // Skip system disk
         if (g_drives[i].isSystem) continue;
 
         char itemText[256];
@@ -326,10 +451,12 @@ void RefreshDriveList(void) {
     if (itemsAdded == 0) {
         SendMessage(g_hComboDrives, CB_ADDSTRING, 0, (LPARAM)"(No removable USB drives detected - insert USB and click Refresh)");
         SendMessage(g_hComboDrives, CB_SETCURSEL, 0, 0);
-        EnableWindow(g_hBtnFlash, FALSE);
+        EnableWindow(g_hBtnMakeExec, FALSE);
+        EnableWindow(g_hBtnRawFlash, FALSE);
     } else {
         SendMessage(g_hComboDrives, CB_SETCURSEL, usbIdx >= 0 ? usbIdx : 0, 0);
-        EnableWindow(g_hBtnFlash, TRUE);
+        EnableWindow(g_hBtnMakeExec, TRUE);
+        EnableWindow(g_hBtnRawFlash, TRUE);
     }
 }
 
@@ -355,13 +482,13 @@ void BrowseForIso(HWND hWnd) {
             GetFileSizeEx(hF, &sz);
             CloseHandle(hF);
             char stats[128];
-            snprintf(stats, sizeof(stats), "Selected: %.1f MB", (double)sz.QuadPart / (1024.0 * 1024.0));
+            snprintf(stats, sizeof(stats), "Selected ISO: %.1f MB", (double)sz.QuadPart / (1024.0 * 1024.0));
             SetWindowTextA(g_hStatusLabel, stats);
         }
     }
 }
 
-void StartFlashing(HWND hWnd) {
+void StartOperation(HWND hWnd, BOOL isRaw) {
     int curSel = (int)SendMessage(g_hComboDrives, CB_GETCURSEL, 0, 0);
     if (curSel == CB_ERR) {
         MessageBoxA(hWnd, "Please select a target USB drive.", "No Drive Selected", MB_OK | MB_ICONWARNING);
@@ -376,167 +503,179 @@ void StartFlashing(HWND hWnd) {
 
     GuiDriveInfo *target = &g_drives[driveIdx];
     if (target->isSystem) {
-        MessageBoxA(hWnd, "Cannot flash to the Windows system disk!", "System Disk Protected", MB_OK | MB_ICONERROR);
+        MessageBoxA(hWnd, "Cannot write to the Windows system disk!", "System Disk Protected", MB_OK | MB_ICONERROR);
         return;
     }
 
-    if (GetFileAttributesA(g_isoPath) == INVALID_FILE_ATTRIBUTES) {
-        MessageBoxA(hWnd, "The selected ISO file could not be found.\nPlease click 'Browse' and select bootos.iso.", "ISO File Not Found", MB_OK | MB_ICONERROR);
+    if (target->letter == ' ' && !isRaw) {
+        MessageBoxA(hWnd, "Selected USB drive does not have a Windows drive letter.\nUse 'Raw Flash' or assign a drive letter in Disk Management.", "No Drive Letter", MB_OK | MB_ICONWARNING);
         return;
     }
 
-    // Confirmation dialog
     char warnMsg[512];
-    snprintf(warnMsg, sizeof(warnMsg),
-             "WARNING: ALL DATA on the selected drive will be permanently ERASED!\n\n"
-             "Drive: %s (%.1f GB)\n"
-             "Physical Drive: PhysicalDrive%d\n"
-             "ISO to Flash: %s\n\n"
-             "Are you sure you want to proceed and flash BootOS to this drive?",
-             target->product, target->sizeGB, target->diskNumber, g_isoPath);
+    if (isRaw) {
+        snprintf(warnMsg, sizeof(warnMsg),
+                 "WARNING: Raw flashing will completely OVERWRITE PhysicalDrive%d (%s, %.1f GB)!\n\n"
+                 "Are you sure you want to write raw hybrid sectors to this drive?",
+                 target->diskNumber, target->product, target->sizeGB);
+    } else {
+        snprintf(warnMsg, sizeof(warnMsg),
+                 "Make USB Executable (Rufus-Style):\n\n"
+                 "Target: Drive %c: (%s, %.1f GB)\n\n"
+                 "This will install the UEFI bootloader and BootOS files to Drive %c:.\n"
+                 "Your drive remains 100%% accessible in Windows File Explorer!\n"
+                 "You will be able to copy or update bootos.iso via File Manager anytime.\n\n"
+                 "Proceed?",
+                 target->letter, target->product, target->sizeGB, target->letter);
+    }
 
-    int res = MessageBoxA(hWnd, warnMsg, "Confirm USB Drive Overwrite", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    int res = MessageBoxA(hWnd, warnMsg, isRaw ? "Confirm Raw Flash" : "Make USB Executable", MB_YESNO | MB_ICONINFORMATION);
     if (res != IDYES) return;
 
-    // Disable controls during write
-    EnableWindow(g_hBtnFlash, FALSE);
+    EnableWindow(g_hBtnMakeExec, FALSE);
+    EnableWindow(g_hBtnRawFlash, FALSE);
     EnableWindow(g_hBtnBrowse, FALSE);
     EnableWindow(g_hBtnRefresh, FALSE);
     EnableWindow(g_hComboDrives, FALSE);
-    EnableWindow(g_hBtnRunVm, FALSE);
+    EnableWindow(g_hBtnRunVBox, FALSE);
 
     SendMessage(g_hProgress, PBM_SETPOS, 0, 0);
-    SetWindowTextA(g_hStatusLabel, "Writing BootOS hybrid ISO to USB drive... Please DO NOT unplug the USB!");
-    SetWindowTextA(g_hStatsLabel, "Starting write stream...");
+    SetWindowTextA(g_hStatusLabel, isRaw ? "Writing raw sectors to USB..." : "Making USB drive bootable and copying BootOS files...");
+    SetWindowTextA(g_hStatsLabel, "Starting...");
 
     strncpy(g_worker.isoPath, g_isoPath, sizeof(g_worker.isoPath));
     g_worker.diskNumber = target->diskNumber;
+    g_worker.targetDriveLetter = target->letter;
+    g_worker.isRawFlash = isRaw;
+    g_worker.copyIsoFile = (SendMessage(g_hChkCopyIso, BM_GETCHECK, 0, 0) == BST_CHECKED);
     g_worker.hWnd = hWnd;
 
-    HANDLE hThread = CreateThread(NULL, 0, FlashWorkerThread, &g_worker, 0, NULL);
+    HANDLE hThread = CreateThread(NULL, 0, WorkerThread, &g_worker, 0, NULL);
     if (hThread) {
         CloseHandle(hThread);
         SetTimer(hWnd, ID_TIMER_PROGRESS, 100, NULL);
     } else {
         MessageBoxA(hWnd, "Failed to start background worker thread.", "Error", MB_OK | MB_ICONERROR);
-        EnableWindow(g_hBtnFlash, TRUE);
+        EnableWindow(g_hBtnMakeExec, TRUE);
+        EnableWindow(g_hBtnRawFlash, TRUE);
         EnableWindow(g_hBtnBrowse, TRUE);
         EnableWindow(g_hBtnRefresh, TRUE);
         EnableWindow(g_hComboDrives, TRUE);
-        EnableWindow(g_hBtnRunVm, TRUE);
+        EnableWindow(g_hBtnRunVBox, TRUE);
     }
 }
 
-void ExecuteInVM(HWND hWnd) {
+void ExecuteInVirtualBox(HWND hWnd) {
     const char *vboxPath = "C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe";
     DWORD attr = GetFileAttributesA(vboxPath);
     if (attr != INVALID_FILE_ATTRIBUTES) {
         SetWindowTextA(g_hStatusLabel, "Launching BootOS inside Oracle VirtualBox...");
         system("vde-vlm start vmbootos2 --gui 2>nul || \"C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe\" startvm vmbootos2 --type gui");
-        SetWindowTextA(g_hStatusLabel, "Virtual machine window opened!");
+        SetWindowTextA(g_hStatusLabel, "VirtualBox machine window opened!");
         return;
     }
 
-    if (system("qemu-system-x86_64 --version >nul 2>&1") == 0) {
-        SetWindowTextA(g_hStatusLabel, "Launching BootOS with QEMU...");
-        char qcmd[512];
-        snprintf(qcmd, sizeof(qcmd), "start qemu-system-x86_64 -m 2048 -cdrom \"%s\" -boot d", g_isoPath);
-        system(qcmd);
-        SetWindowTextA(g_hStatusLabel, "QEMU window opened!");
-        return;
-    }
-
-    MessageBoxA(hWnd, "Neither VirtualBox nor QEMU was found.\nTo boot on your PC, select your USB drive and click 'Flash to USB'!",
-                "Virtual Machine Not Found", MB_OK | MB_ICONINFORMATION);
+    MessageBoxA(hWnd, "Oracle VirtualBox was not found at:\nC:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe\n\nPlease install VirtualBox or use 'Make USB Executable' to boot on your PC!",
+                "Oracle VirtualBox Not Found", MB_OK | MB_ICONINFORMATION);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_CREATE: {
-            g_hFontNormal = CreateFontA(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+            g_hFontNormal = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
                                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
                                         DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-            g_hFontBold = CreateFontA(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
+            g_hFontBold = CreateFontA(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
                                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
                                       DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-            g_hFontHeader = CreateFontA(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
+            g_hFontHeader = CreateFontA(19, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET,
                                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
                                         DEFAULT_PITCH | FF_SWISS, "Segoe UI");
 
             // Header Banner
-            HWND hTitle = CreateWindowA("STATIC", "BootOS USB Flasher & Runner",
-                                        WS_CHILD | WS_VISIBLE, 20, 15, 520, 26, hWnd, NULL, g_hInstance, NULL);
+            HWND hTitle = CreateWindowA("STATIC", "BootOS USB Maker & Bootloader",
+                                        WS_CHILD | WS_VISIBLE, 20, 12, 540, 24, hWnd, NULL, g_hInstance, NULL);
             SendMessage(hTitle, WM_SETFONT, (WPARAM)g_hFontHeader, TRUE);
 
-            HWND hSub = CreateWindowA("STATIC", "100% RAM-Resident OS - Flashes bootable hybrid BIOS/UEFI media without Rufus.",
-                                      WS_CHILD | WS_VISIBLE, 20, 42, 520, 20, hWnd, NULL, g_hInstance, NULL);
+            HWND hSub = CreateWindowA("STATIC", "Make any USB drive bootable/executable (Rufus-style) so you can copy bootos.iso in File Explorer.",
+                                      WS_CHILD | WS_VISIBLE, 20, 38, 540, 18, hWnd, NULL, g_hInstance, NULL);
             SendMessage(hSub, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-            // Step 1: ISO Image
-            HWND hLbl1 = CreateWindowA("STATIC", "1. BootOS ISO Image:",
-                                       WS_CHILD | WS_VISIBLE, 20, 75, 500, 20, hWnd, NULL, g_hInstance, NULL);
+            // Step 1: Select Target USB Drive
+            HWND hLbl1 = CreateWindowA("STATIC", "1. Target USB Drive (Select from connected USBs):",
+                                       WS_CHILD | WS_VISIBLE, 20, 68, 520, 18, hWnd, NULL, g_hInstance, NULL);
             SendMessage(hLbl1, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
-
-            g_hEditIso = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", g_isoPath,
-                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
-                                         20, 98, 410, 26, hWnd, (HMENU)ID_EDIT_ISO, g_hInstance, NULL);
-            SendMessage(g_hEditIso, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
-
-            g_hBtnBrowse = CreateWindowA("BUTTON", "Browse...",
-                                         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                         440, 97, 100, 28, hWnd, (HMENU)ID_BTN_BROWSE, g_hInstance, NULL);
-            SendMessage(g_hBtnBrowse, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
-
-            // Step 2: Target USB Selection
-            HWND hLbl2 = CreateWindowA("STATIC", "2. Target USB Drive (Select among connected USB drives):",
-                                       WS_CHILD | WS_VISIBLE, 20, 138, 500, 20, hWnd, NULL, g_hInstance, NULL);
-            SendMessage(hLbl2, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
             g_hComboDrives = CreateWindowA("COMBOBOX", "",
                                            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                           20, 161, 410, 200, hWnd, (HMENU)ID_COMBO_DRIVES, g_hInstance, NULL);
+                                           20, 90, 420, 220, hWnd, (HMENU)ID_COMBO_DRIVES, g_hInstance, NULL);
             SendMessage(g_hComboDrives, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             g_hBtnRefresh = CreateWindowA("BUTTON", "Refresh",
                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          440, 160, 100, 28, hWnd, (HMENU)ID_BTN_REFRESH, g_hInstance, NULL);
+                                          450, 89, 95, 27, hWnd, (HMENU)ID_BTN_REFRESH, g_hInstance, NULL);
             SendMessage(g_hBtnRefresh, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-            // Step 3: Progress & Status
+            // Step 2: BootOS ISO Image
+            HWND hLbl2 = CreateWindowA("STATIC", "2. BootOS ISO Image:",
+                                       WS_CHILD | WS_VISIBLE, 20, 128, 520, 18, hWnd, NULL, g_hInstance, NULL);
+            SendMessage(hLbl2, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
+
+            g_hEditIso = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", g_isoPath,
+                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
+                                         20, 150, 420, 26, hWnd, (HMENU)ID_EDIT_ISO, g_hInstance, NULL);
+            SendMessage(g_hEditIso, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+            g_hBtnBrowse = CreateWindowA("BUTTON", "Browse...",
+                                         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                         450, 149, 95, 28, hWnd, (HMENU)ID_BTN_BROWSE, g_hInstance, NULL);
+            SendMessage(g_hBtnBrowse, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+            g_hChkCopyIso = CreateWindowA("BUTTON", "Also copy bootos.iso to USB root (File Explorer drag-and-drop ready)",
+                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                          20, 182, 520, 20, hWnd, (HMENU)ID_CHK_COPY_ISO, g_hInstance, NULL);
+            SendMessage(g_hChkCopyIso, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+            SendMessage(g_hChkCopyIso, BM_SETCHECK, BST_CHECKED, 0);
+
+            // Step 3: Progress
             HWND hLbl3 = CreateWindowA("STATIC", "3. Progress & Status:",
-                                       WS_CHILD | WS_VISIBLE, 20, 205, 500, 20, hWnd, NULL, g_hInstance, NULL);
+                                       WS_CHILD | WS_VISIBLE, 20, 212, 520, 18, hWnd, NULL, g_hInstance, NULL);
             SendMessage(hLbl3, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
             g_hProgress = CreateWindowExA(0, PROGRESS_CLASSA, "",
                                           WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
-                                          20, 228, 520, 24, hWnd, (HMENU)ID_PROGRESS, g_hInstance, NULL);
+                                          20, 234, 525, 22, hWnd, (HMENU)ID_PROGRESS, g_hInstance, NULL);
             SendMessage(g_hProgress, PBM_SETRANGE32, 0, 100);
 
-            g_hStatusLabel = CreateWindowA("STATIC", "Ready. Select your USB drive and click 'Flash to USB'.",
-                                           WS_CHILD | WS_VISIBLE, 20, 258, 520, 20, hWnd, (HMENU)ID_STATUS_LABEL, g_hInstance, NULL);
+            g_hStatusLabel = CreateWindowA("STATIC", "Ready. Pick your USB and click 'Make USB Executable'.",
+                                           WS_CHILD | WS_VISIBLE, 20, 262, 525, 18, hWnd, (HMENU)ID_STATUS_LABEL, g_hInstance, NULL);
             SendMessage(g_hStatusLabel, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             g_hStatsLabel = CreateWindowA("STATIC", "",
-                                          WS_CHILD | WS_VISIBLE, 20, 278, 520, 20, hWnd, (HMENU)ID_STATS_LABEL, g_hInstance, NULL);
+                                          WS_CHILD | WS_VISIBLE, 20, 282, 525, 18, hWnd, (HMENU)ID_STATS_LABEL, g_hInstance, NULL);
             SendMessage(g_hStatsLabel, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             // Action Buttons
-            g_hBtnFlash = CreateWindowA("BUTTON", "⚡ Flash to USB",
-                                        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                                        20, 315, 160, 36, hWnd, (HMENU)ID_BTN_FLASH, g_hInstance, NULL);
-            SendMessage(g_hBtnFlash, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
+            g_hBtnMakeExec = CreateWindowA("BUTTON", "⚡ Make USB Executable",
+                                           WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                                           20, 312, 180, 36, hWnd, (HMENU)ID_BTN_MAKE_EXEC, g_hInstance, NULL);
+            SendMessage(g_hBtnMakeExec, WM_SETFONT, (WPARAM)g_hFontBold, TRUE);
 
-            g_hBtnRunVm = CreateWindowA("BUTTON", "▶ Run in VM / Sandbox",
-                                        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                        190, 315, 180, 36, hWnd, (HMENU)ID_BTN_RUNVM, g_hInstance, NULL);
-            SendMessage(g_hBtnRunVm, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+            g_hBtnRawFlash = CreateWindowA("BUTTON", "Raw Hybrid Flash",
+                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                           208, 312, 130, 36, hWnd, (HMENU)ID_BTN_RAW_FLASH, g_hInstance, NULL);
+            SendMessage(g_hBtnRawFlash, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+            g_hBtnRunVBox = CreateWindowA("BUTTON", "▶ VirtualBox Test",
+                                          WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                          346, 312, 120, 36, hWnd, (HMENU)ID_BTN_RUN_VBOX, g_hInstance, NULL);
+            SendMessage(g_hBtnRunVBox, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             HWND hBtnExit = CreateWindowA("BUTTON", "Exit",
                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          440, 315, 100, 36, hWnd, (HMENU)ID_BTN_EXIT, g_hInstance, NULL);
+                                          474, 312, 71, 36, hWnd, (HMENU)ID_BTN_EXIT, g_hInstance, NULL);
             SendMessage(hBtnExit, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
-            // Populate drives
             RefreshDriveList();
             break;
         }
@@ -546,32 +685,42 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 if (g_worker.isRunning) {
                     SendMessage(g_hProgress, PBM_SETPOS, g_worker.percent, 0);
                     char statText[128];
-                    snprintf(statText, sizeof(statText), "Writing to USB: %d%% (%.1f / %.1f MB) @ %.1f MB/s",
+                    snprintf(statText, sizeof(statText), "Progress: %d%% (%.1f / %.1f MB) @ %.1f MB/s",
                              g_worker.percent, g_worker.writtenMB, g_worker.totalMB, g_worker.speedMBps);
                     SetWindowTextA(g_hStatsLabel, statText);
                 } else {
                     KillTimer(hWnd, ID_TIMER_PROGRESS);
-                    EnableWindow(g_hBtnFlash, TRUE);
+                    EnableWindow(g_hBtnMakeExec, TRUE);
+                    EnableWindow(g_hBtnRawFlash, TRUE);
                     EnableWindow(g_hBtnBrowse, TRUE);
                     EnableWindow(g_hBtnRefresh, TRUE);
                     EnableWindow(g_hComboDrives, TRUE);
-                    EnableWindow(g_hBtnRunVm, TRUE);
+                    EnableWindow(g_hBtnRunVBox, TRUE);
 
                     if (g_worker.success) {
                         SendMessage(g_hProgress, PBM_SETPOS, 100, 0);
-                        SetWindowTextA(g_hStatusLabel, "SUCCESS: BootOS has been written to the USB drive!");
-                        SetWindowTextA(g_hStatsLabel, "USB drive is now 100% bootable on Legacy BIOS and UEFI hardware.");
+                        SetWindowTextA(g_hStatusLabel, "SUCCESS: USB drive is now bootable and executable!");
+                        SetWindowTextA(g_hStatsLabel, "Drive opened in File Explorer. You can copy bootos.iso anytime.");
+
+                        // Open USB drive in Windows File Explorer
+                        if (!g_worker.isRawFlash && g_worker.targetDriveLetter != ' ') {
+                            char rootPath[16];
+                            snprintf(rootPath, sizeof(rootPath), "%c:\\", g_worker.targetDriveLetter);
+                            ShellExecuteA(NULL, "open", "explorer.exe", rootPath, NULL, SW_SHOWNORMAL);
+                        }
+
                         MessageBoxA(hWnd,
-                                    "BootOS was successfully written to your USB flash drive!\n\n"
-                                    "Your USB drive is now bootable:\n"
-                                    "  - Compatible with Legacy BIOS and UEFI\n"
-                                    "  - Runs 100% in DRAM (USB can be unplugged after boot)",
-                                    "Flashing Complete", MB_OK | MB_ICONINFORMATION);
+                                    "Your USB flash drive is now 100% executable and bootable!\n\n"
+                                    "File Manager Integration:\n"
+                                    "  - The drive is open in Windows File Explorer.\n"
+                                    "  - You can drag-and-drop or copy bootos.iso to this drive anytime!\n"
+                                    "  - Boots on Legacy BIOS and modern UEFI hardware.",
+                                    "USB Drive Ready", MB_OK | MB_ICONINFORMATION);
                     } else {
                         SendMessage(g_hProgress, PBM_SETPOS, 0, 0);
-                        SetWindowTextA(g_hStatusLabel, "Flashing failed.");
+                        SetWindowTextA(g_hStatusLabel, "Operation failed.");
                         SetWindowTextA(g_hStatsLabel, g_worker.errorMsg);
-                        MessageBoxA(hWnd, g_worker.errorMsg, "Flashing Failed", MB_OK | MB_ICONERROR);
+                        MessageBoxA(hWnd, g_worker.errorMsg, "Operation Failed", MB_OK | MB_ICONERROR);
                     }
                 }
             }
@@ -588,11 +737,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     RefreshDriveList();
                     SetWindowTextA(g_hStatusLabel, "Drive list refreshed.");
                     break;
-                case ID_BTN_FLASH:
-                    StartFlashing(hWnd);
+                case ID_BTN_MAKE_EXEC:
+                    StartOperation(hWnd, FALSE);
                     break;
-                case ID_BTN_RUNVM:
-                    ExecuteInVM(hWnd);
+                case ID_BTN_RAW_FLASH:
+                    StartOperation(hWnd, TRUE);
+                    break;
+                case ID_BTN_RUN_VBOX:
+                    ExecuteInVirtualBox(hWnd);
                     break;
                 case ID_BTN_EXIT:
                     PostQuitMessage(0);
@@ -618,34 +770,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     g_hInstance = hInstance;
 
-    // Check Administrator privileges - re-elevate if needed
     if (!IsUserAdmin()) {
         char exePath[MAX_PATH];
         GetModuleFileNameA(NULL, exePath, sizeof(exePath));
         HINSTANCE res = ShellExecuteA(NULL, "runas", exePath, lpCmdLine, NULL, SW_SHOWNORMAL);
-        if ((INT_PTR)res > 32) {
-            return 0; // Elevated process launched
-        }
-        // If user cancelled UAC, continue anyway but warn them
+        if ((INT_PTR)res > 32) return 0;
     }
 
-    // Locate default bootos.iso next to executable or in parent directory
     char exePath[MAX_PATH];
     GetModuleFileNameA(NULL, exePath, sizeof(exePath));
-    char dir[MAX_PATH];
-    strncpy(dir, exePath, sizeof(dir));
-    char *lastSlash = strrchr(dir, '\\');
+    strncpy(g_appDir, exePath, sizeof(g_appDir));
+    char *lastSlash = strrchr(g_appDir, '\\');
     if (lastSlash) *(lastSlash + 1) = '\0';
 
-    snprintf(g_isoPath, sizeof(g_isoPath), "%sbootos.iso", dir);
+    snprintf(g_isoPath, sizeof(g_isoPath), "%sbootos.iso", g_appDir);
     if (GetFileAttributesA(g_isoPath) == INVALID_FILE_ATTRIBUTES) {
-        snprintf(g_isoPath, sizeof(g_isoPath), "%s..\\bootos.iso", dir);
+        snprintf(g_isoPath, sizeof(g_isoPath), "%s..\\bootos.iso", g_appDir);
     }
     if (GetFileAttributesA(g_isoPath) == INVALID_FILE_ATTRIBUTES) {
         snprintf(g_isoPath, sizeof(g_isoPath), "bootos.iso");
     }
 
-    // Initialize common controls for progress bar & modern UI
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
     icex.dwICC = ICC_WIN95_CLASSES | ICC_PROGRESS_CLASS;
@@ -660,7 +805,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wcex.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    wcex.lpszClassName = "BootOSFlasherWndClass";
+    wcex.lpszClassName = "BootOSMakerWndClass";
     RegisterClassExA(&wcex);
 
     int w = 580;
@@ -668,8 +813,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    g_hMainWnd = CreateWindowExA(0, "BootOSFlasherWndClass",
-                                 "BootOS USB Flasher (No Rufus Needed)",
+    g_hMainWnd = CreateWindowExA(0, "BootOSMakerWndClass",
+                                 "BootOS USB Maker & Bootloader (Rufus-Style)",
                                  WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                                  x, y, w, h, NULL, NULL, hInstance, NULL);
 

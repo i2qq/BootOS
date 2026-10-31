@@ -242,37 +242,26 @@ BOOL FlashISO(const char *isoPath, int targetDisk) {
 
 void ExecuteBootOSInVM(const char *isoPath) {
     printf("\n==========================================================\n");
-    printf("        Executing BootOS Live (Virtual Machine Mode)\n");
+    printf("     Executing BootOS in Oracle VirtualBox\n");
     printf("==========================================================\n");
     
-    // Check for VirtualBox
     const char *vboxPath = "C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe";
     DWORD attr = GetFileAttributesA(vboxPath);
     if (attr != INVALID_FILE_ATTRIBUTES) {
-        printf("Detected Oracle VirtualBox! Launching BootOS in Virtual Machine...\n");
+        printf("Detected Oracle VirtualBox! Launching BootOS...\n");
         char cmd[512];
-        // Check if vmbootos2 or vmbootos exists or run via vde-vlm
         snprintf(cmd, sizeof(cmd), "vde-vlm start vmbootos2 --gui");
         int res = system(cmd);
         if (res != 0) {
             snprintf(cmd, sizeof(cmd), "\"%s\" startvm vmbootos2 --type gui", vboxPath);
             system(cmd);
         }
-        printf("\nBootOS Virtual Machine window launched!\n");
+        printf("\nBootOS VirtualBox window launched!\n");
         return;
     }
 
-    // Check for QEMU
-    char qemuCmd[512];
-    snprintf(qemuCmd, sizeof(qemuCmd), "qemu-system-x86_64 -m 2048 -cdrom \"%s\" -boot d", isoPath);
-    if (system("qemu-system-x86_64 --version >nul 2>&1") == 0) {
-        printf("Detected QEMU! Executing BootOS directly...\n");
-        system(qemuCmd);
-        return;
-    }
-
-    printf("Neither VirtualBox nor QEMU was found on PATH.\n");
-    printf("To boot on your physical PC, use Option [1] to flash to a USB drive!\n");
+    printf("Oracle VirtualBox was not found at %s.\n", vboxPath);
+    printf("To boot on your physical PC, use Option [1] to make your USB drive bootable!\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -316,7 +305,7 @@ int main(int argc, char *argv[]) {
 
     printf("Main Menu:\n");
     printf("  [1] Flash BootOS directly to USB Flash Drive (No Rufus Needed!)\n");
-    printf("  [2] Execute BootOS directly on Windows (Live VM / QEMU)\n");
+    printf("  [2] Execute BootOS in Oracle VirtualBox\n");
     printf("  [Q] Exit\n\n");
 
     printf("Select option [1, 2, Q]: ");
