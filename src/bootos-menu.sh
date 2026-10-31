@@ -1147,7 +1147,7 @@ while true; do
     echo -e "  ${GREEN}[6]${RESET} Download & Boot Custom Kernel/Initrd"
     echo -e "  ${GREEN}[7]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
     echo -e "  ${GREEN}[8]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
-    echo -e "  ${GREEN}[9]${RESET} Open Root Terminal Shell"
+    echo -e "  ${GREEN}[9]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
     echo -e "  ${GREEN}[10]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
     echo -e "  ${GREEN}[11]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
     echo -e "  ${GREEN}[12]${RESET} Power Off"
@@ -1166,11 +1166,14 @@ while true; do
         8) online_netboot_menu ;;
         9|"sh"|"shell"|"bash")
             echo -e "\n${CYAN}======================================================${RESET}"
-            echo -e " ${BOLD}BootOS Root Terminal Shell${RESET}"
-            echo -e " Available tools: chromium, browser, curl, wget, 7z, kexec, fdisk, parted, lsblk, ip"
-            echo -e " Type 'exit' to return to the BootOS menu."
+            echo -e " ${BOLD}BootOS Root Terminal Shell (GNU Bash)${RESET}"
+            echo -e " Full Shell Commands: ${GREEN}sudo${RESET}, ${GREEN}echo${RESET}, ${GREEN}mkdir${RESET}, ${GREEN}touch${RESET}, ${GREEN}cat${RESET}, ${GREEN}nano${RESET}, ${GREEN}grep${RESET}"
+            echo -e " Utilities: chromium, browser, curl, wget, 7z, kexec, fdisk, parted, lsblk, ip"
+            echo -e " Type '${YELLOW}exit${RESET}' or '${YELLOW}menu${RESET}' to return to the BootOS menu."
             echo -e "${CYAN}======================================================${RESET}\n"
-            if command -v cttyhack >/dev/null 2>&1; then
+            if [ -x /bin/bash ]; then
+                BOOTOS_SHELL=1 HOME=/root USER=root SHELL=/bin/bash /bin/bash -i
+            elif command -v cttyhack >/dev/null 2>&1; then
                 setsid cttyhack /bin/sh
             else
                 PS1='bootos:\w# ' /bin/sh -i

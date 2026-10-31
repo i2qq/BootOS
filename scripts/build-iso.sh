@@ -75,7 +75,17 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xprop \
     e2fsprogs \
     dosfstools \
-    tar
+    tar \
+    bash \
+    bash-completion \
+    sudo \
+    coreutils \
+    findutils \
+    grep \
+    sed \
+    gawk \
+    nano \
+    less
 "
 
 # Copy kernel out to ISO boot folder
@@ -135,6 +145,42 @@ ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-browser"
 mkdir -p "${ROOTFS_DIR}/tmp/.X11-unix" "${ROOTFS_DIR}/var/log"
 chmod 1777 "${ROOTFS_DIR}/tmp/.X11-unix"
 
+# Configure sudo (passwordless for root & wheel)
+mkdir -p "${ROOTFS_DIR}/etc/sudoers.d"
+cat <<'EOF' > "${ROOTFS_DIR}/etc/sudoers.d/wheel"
+Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults env_keep += "PATH"
+%wheel ALL=(ALL:ALL) NOPASSWD: ALL
+root ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+chmod 440 "${ROOTFS_DIR}/etc/sudoers.d/wheel"
+chmod 4755 "${ROOTFS_DIR}/usr/bin/sudo" 2>/dev/null || true
+
+# Set root default shell to bash
+sed -i 's|root:x:0:0:root:/root:/bin/sh|root:x:0:0:root:/root:/bin/bash|' "${ROOTFS_DIR}/etc/passwd" 2>/dev/null || true
+
+# Create full-featured bashrc with prompt, aliases, and completion
+mkdir -p "${ROOTFS_DIR}/root" "${ROOTFS_DIR}/etc/bash"
+cat <<'EOF' > "${ROOTFS_DIR}/root/.bashrc"
+# BootOS Full GNU Shell Configuration
+export PS1='\[\033[1;36m\]bootos\[\033[0m\]:\[\033[1;32m\]\w\[\033[0m\]# '
+export TERM=linux
+export HISTSIZE=2000
+export HISTFILESIZE=4000
+export PAGER=less
+export EDITOR=nano
+alias ls='ls --color=auto'
+alias ll='ls -la --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+alias grep='grep --color=auto'
+alias menu='/usr/local/bin/bootos'
+
+# Source bash completion if available
+[ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion 2>/dev/null
+EOF
+cp "${ROOTFS_DIR}/root/.bashrc" "${ROOTFS_DIR}/etc/bash/bashrc"
+
 # Configure inittab
 cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
 ::sysinit:/sbin/rc sysinit
@@ -150,7 +196,7 @@ tty3::respawn:/sbin/getty 38400 tty3
 EOF
 
 cat <<'EOF' > "${ROOTFS_DIR}/etc/profile.d/bootos.sh"
-if [ "$(tty)" = "/dev/tty1" ]; then
+if [ -z "$BOOTOS_SHELL" ] && [ "$(tty 2>/dev/null)" = "/dev/tty1" ]; then
     /usr/local/bin/bootos
 fi
 EOF
