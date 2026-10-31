@@ -1,0 +1,5 @@
+# Ignore built ISO images to prevent repo bloat / GitHub 100MB file limit
+*.iso
+*.img
+/build/
+/tmp/
