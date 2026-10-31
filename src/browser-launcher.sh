@@ -4,6 +4,9 @@
 # ==============================================================================
 # Launches Chromium in a lightweight Openbox/Xorg session with full mouse,
 # keyboard, and hardware input acceleration.
+#
+# Pressing the Kill ([X]) or Minus ([-]) buttons immediately returns control
+# back to the original BootOS terminal homescreen.
 # ==============================================================================
 
 TARGET_URL="${1:-https://google.com}"
@@ -84,20 +87,55 @@ EOF
 cat <<'EOF' > /root/.config/openbox/rc.xml
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
+  <theme>
+    <titleLayout>NLIMC</titleLayout>
+  </theme>
   <mouse>
     <dragThreshold>1</dragThreshold>
     <doubleClickTime>500</doubleClickTime>
     <screenEdgeWarpTime>400</screenEdgeWarpTime>
+
+    <!-- Close / Kill button: Close window and return to terminal -->
+    <context name="Close">
+      <mousebind button="Left" action="Click">
+        <action name="Execute">
+          <command>sh -c "pkill -f chromium 2>/dev/null || openbox --exit"</command>
+        </action>
+      </mousebind>
+    </context>
+
+    <!-- Minus / Minimize button: Instantly return to terminal homescreen -->
+    <context name="Iconify">
+      <mousebind button="Left" action="Click">
+        <action name="Execute">
+          <command>sh -c "pkill -f chromium 2>/dev/null || openbox --exit"</command>
+        </action>
+      </mousebind>
+    </context>
   </mouse>
   <placement>
     <policy>Smart</policy>
   </placement>
   <keyboard>
     <keybind key="A-F4">
-      <action name="Close"/>
+      <action name="Execute">
+        <command>sh -c "pkill -f chromium 2>/dev/null || openbox --exit"</command>
+      </action>
     </keybind>
     <keybind key="C-q">
-      <action name="Close"/>
+      <action name="Execute">
+        <command>sh -c "pkill -f chromium 2>/dev/null || openbox --exit"</command>
+      </action>
+    </keybind>
+    <keybind key="A-minus">
+      <action name="Execute">
+        <command>sh -c "pkill -f chromium 2>/dev/null || openbox --exit"</command>
+      </action>
+    </keybind>
+    <keybind key="W-d">
+      <action name="Execute">
+        <command>sh -c "pkill -f chromium 2>/dev/null || openbox --exit"</command>
+      </action>
     </keybind>
   </keyboard>
   <applications>
@@ -109,8 +147,11 @@ cat <<'EOF' > /root/.config/openbox/rc.xml
 </openbox_config>
 EOF
 
-# 7. Generate .xinitrc session script
-cat <<EOF > /root/.xinitrc
+# 7. Write target URL for session
+echo "$TARGET_URL" > /tmp/chromium_target_url
+
+# 8. Generate .xinitrc session script (quoted heredoc to preserve variables)
+cat <<'EOF' > /root/.xinitrc
 # Set default X11 cursor theme and shape
 export XCURSOR_THEME=Adwaita
 export XCURSOR_SIZE=24
@@ -118,6 +159,49 @@ xsetroot -cursor_name left_ptr -solid "#1e1e2e" 2>/dev/null || true
 
 # Start lightweight window manager
 openbox &
+
+# Watcher: if Chromium is closed OR minimized (minus button pressed),
+# immediately terminate session and return to the BootOS terminal homescreen
+(
+    # Wait for Chromium window to appear
+    for i in $(seq 1 50); do
+        active=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk '{print $NF}')
+        if [ -n "$active" ] && [ "$active" != "0x0" ]; then
+            break
+        fi
+        sleep 0.2
+    done
+    sleep 0.5
+
+    # Continuous monitor for minimization (minus button pressed)
+    while true; do
+        sleep 0.3
+        if ! pgrep -f chromium >/dev/null 2>&1; then
+            break
+        fi
+
+        active=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk '{print $NF}')
+        if [ -z "$active" ] || [ "$active" = "0x0" ]; then
+            # Window was minimized via minus button -> terminate session immediately
+            pkill -TERM -f chromium 2>/dev/null || true
+            pkill -9 -f chromium 2>/dev/null || true
+            openbox --exit 2>/dev/null || true
+            break
+        fi
+
+        if xprop -id "$active" _NET_WM_STATE 2>/dev/null | grep -q "_NET_WM_STATE_HIDDEN"; then
+            # Window entered hidden/minimized state -> terminate session immediately
+            pkill -TERM -f chromium 2>/dev/null || true
+            pkill -9 -f chromium 2>/dev/null || true
+            openbox --exit 2>/dev/null || true
+            break
+        fi
+    done
+) &
+
+# Read target URL
+URL="https://google.com"
+[ -f /tmp/chromium_target_url ] && URL=$(cat /tmp/chromium_target_url)
 
 # Launch Chromium with robust hardware & container compatibility flags
 exec dbus-run-session -- chromium \
@@ -131,14 +215,14 @@ exec dbus-run-session -- chromium \
     --password-store=basic \
     --start-maximized \
     --enable-features=OverlayScrollbar \
-    "$TARGET_URL"
+    "$URL"
 EOF
 
 echo "Starting graphical display and Chromium browser..."
-echo "Close the Chromium window or press Alt+F4 to return to BootOS."
+echo "Tip: Click the kill ([X]) or minus ([-]) buttons to return to the BootOS homescreen."
 xinit /root/.xinitrc -- :0 -novtswitch >/tmp/xorg.log 2>&1
 
 # Return display to main TTY console
 chvt 1 2>/dev/null || true
-echo "Chromium closed. Returning to terminal..."
+echo "Chromium closed. Returning to terminal homescreen..."
 sleep 1

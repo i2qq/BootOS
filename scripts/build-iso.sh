@@ -71,7 +71,8 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     eudev \
     eudev-hwids \
     xsetroot \
-    adwaita-icon-theme
+    adwaita-icon-theme \
+    xprop
 "
 
 # Copy kernel out to ISO boot folder

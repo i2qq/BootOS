@@ -939,7 +939,7 @@ launch_browser() {
     esac
 
     echo -e "\n${GREEN}Launching Chromium...${RESET}"
-    echo "Tip: Close the Chromium window or press Alt+F4 to return to BootOS."
+    echo "Tip: Click the kill ([X]) or minus ([-]) button (or press Alt+F4) to return to BootOS."
     sleep 1
 
     if [ -x /usr/local/bin/browser ]; then
