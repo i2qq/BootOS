@@ -46,6 +46,17 @@ check_internet() {
     return 1
 }
 
+get_persist_info() {
+    if [ -f /etc/bootos_persist_dev ]; then
+        pdev=$(cat /etc/bootos_persist_dev 2>/dev/null | tr -d '\r\n ')
+        if [ -n "$pdev" ]; then
+            echo -e "${GREEN}Active ($pdev)${RESET}"
+            return
+        fi
+    fi
+    echo -e "${YELLOW}Ephemeral DRAM (Run Option 10 to save)${RESET}"
+}
+
 show_banner() {
     clear
     echo -e "${CYAN}"
@@ -60,6 +71,7 @@ show_banner() {
     echo " ------------------------------------------------------------"
     echo -e " ${BOLD}Memory :${RESET} $(get_ram_info)"
     echo -e " ${BOLD}Network:${RESET} $(get_net_info)"
+    echo -e " ${BOLD}Persist:${RESET} $(get_persist_info)"
     echo " ------------------------------------------------------------"
 }
 
@@ -952,6 +964,177 @@ launch_browser() {
     fi
 }
 
+save_persistent_state() {
+    mode="$1"  # "auto" or empty/interactive
+
+    if [ "$mode" != "auto" ]; then
+        show_banner
+        echo -e "${YELLOW}=== Save Persistent State to Storage Drive ===${RESET}\n"
+        echo -e "Persists configurations, Wi-Fi keys, browser history/bookmarks, and"
+        echo -e "downloaded files across system restarts.\n"
+    fi
+
+    target_part=""
+    if [ -f /etc/bootos_persist_dev ]; then
+        saved_dev=$(cat /etc/bootos_persist_dev 2>/dev/null | tr -d '\r\n ')
+        if [ -b "$saved_dev" ]; then
+            target_part="$saved_dev"
+        fi
+    fi
+
+    # In auto mode (e.g. called automatically from reboot):
+    if [ "$mode" = "auto" ]; then
+        if [ -n "$target_part" ]; then
+            echo -e "${CYAN}Auto-saving persistent state to ${BOLD}$target_part${RESET}...${RESET}"
+        else
+            echo -e "${YELLOW}Notice: Persistence drive not configured yet.${RESET}"
+            echo -n "Would you like to select a drive to save changes before rebooting? (y/N): "
+            read -r auto_choice
+            if [ "$auto_choice" != "y" ] && [ "$auto_choice" != "Y" ]; then
+                return 0
+            fi
+        fi
+    fi
+
+    # If target_part not set or user wants to re-select
+    if [ -z "$target_part" ]; then
+        echo -e "${CYAN}Scanning for available storage partitions...${RESET}"
+        p_list=$(lsblk -rnpo NAME,SIZE,TYPE,FSTYPE,LABEL 2>/dev/null | awk '$3=="part" {print $1 "|" $2 "|" $4 "|" $5}')
+
+        if [ -z "$p_list" ]; then
+            # No partitions exist. Check for whole disks.
+            echo -e "${YELLOW}No existing partitions found. Checking raw disks...${RESET}"
+            if select_target_drive; then
+                raw_disk="$SELECTED_DEV"
+                echo -e "\n${YELLOW}Would you like to initialize a persistent ext4 partition on ${BOLD}$raw_disk${RESET}?${RESET}"
+                echo -e "${RED}Warning: This creates an MBR partition table and ext4 filesystem on $raw_disk!${RESET}"
+                echo -n "Initialize persistence partition on $raw_disk? (y/N): "
+                read -r init_ans
+                if [ "$init_ans" = "y" ] || [ "$init_ans" = "Y" ]; then
+                    echo -e "${CYAN}Creating partition and formatting ext4 on $raw_disk...${RESET}"
+                    parted -s "$raw_disk" mklabel msdos mkpart primary ext4 1MiB 100% 2>/dev/null || true
+                    partprobe "$raw_disk" 2>/dev/null || true
+                    sleep 1
+                    target_part="${raw_disk}1"
+                    [ -b "${raw_disk}p1" ] && target_part="${raw_disk}p1"
+                    mkfs.ext4 -F -L "BOOTOS_DATA" "$target_part" 2>/dev/null || true
+                else
+                    echo "Persistence save cancelled."
+                    sleep 1
+                    return 0
+                fi
+            else
+                echo -e "${RED}No storage devices available!${RESET}"
+                [ "$mode" != "auto" ] && { echo "Press Enter to return..."; read -r _; }
+                return 1
+            fi
+        else
+            echo -e "\n${CYAN}Detected Storage Partitions:${RESET}"
+            p_count=$(echo "$p_list" | wc -l)
+            i=1
+            echo "$p_list" | while IFS='|' read -r pname psize pfstype plabel; do
+                echo -e "  [${GREEN}$i${RESET}] ${BOLD}$pname${RESET} ($psize, fstype: ${pfstype:-unformatted}, label: ${plabel:-none})"
+                i=$((i + 1))
+            done
+
+            echo ""
+            echo -n "Select partition for BootOS persistence [1-$p_count] (or 0 to cancel): "
+            read -r p_choice
+            [ -z "$p_choice" ] && p_choice="1"
+            if [ "$p_choice" = "0" ]; then
+                echo "Cancelled."
+                sleep 1
+                return 0
+            fi
+
+            target_part=$(echo "$p_list" | sed -n "${p_choice}p" | cut -d'|' -f1)
+            fstype=$(echo "$p_list" | sed -n "${p_choice}p" | cut -d'|' -f3)
+
+            if [ ! -b "$target_part" ]; then
+                echo -e "${RED}Invalid partition selection!${RESET}"
+                [ "$mode" != "auto" ] && { echo "Press Enter to return..."; read -r _; }
+                return 1
+            fi
+
+            # Format if unformatted
+            if [ -z "$fstype" ]; then
+                echo -e "\n${YELLOW}Partition $target_part is unformatted.${RESET}"
+                echo -n "Format as ext4 with label BOOTOS_DATA? (y/N): "
+                read -r fmt_ans
+                if [ "$fmt_ans" = "y" ] || [ "$fmt_ans" = "Y" ]; then
+                    mkfs.ext4 -F -L "BOOTOS_DATA" "$target_part" 2>/dev/null || true
+                else
+                    return 1
+                fi
+            fi
+        fi
+    fi
+
+    # Mount target partition
+    mnt_target="/tmp/persist_mnt_$$"
+    mkdir -p "$mnt_target"
+    if ! mount "$target_part" "$mnt_target" 2>/dev/null; then
+        mount -t ext4 "$target_part" "$mnt_target" 2>/dev/null || \
+        mount -t vfat "$target_part" "$mnt_target" 2>/dev/null || true
+    fi
+
+    if ! mountpoint -q "$mnt_target"; then
+        echo -e "${RED}Error: Failed to mount $target_part!${RESET}"
+        rm -rf "$mnt_target"
+        [ "$mode" != "auto" ] && { echo "Press Enter to return..."; read -r _; }
+        return 1
+    fi
+
+    echo -e "${CYAN}Creating BootOS persistence archive...${RESET}"
+    mkdir -p /etc
+    echo "$target_part" > /etc/bootos_persist_dev
+    mkdir -p "$mnt_target/bootos"
+
+    # Save /root (config, browser bookmarks, sessions, history), network, hosts
+    tar --exclude='root/.cache' \
+        --exclude='root/.local/share/Trash' \
+        -czf "$mnt_target/bootos-persist.tgz" \
+        -C / \
+        root \
+        etc/wpa_supplicant.conf \
+        etc/resolv.conf \
+        etc/network \
+        etc/hosts \
+        etc/hostname \
+        etc/bootos_persist_dev \
+        2>/dev/null || \
+    tar -czf "$mnt_target/bootos-persist.tgz" \
+        -C / \
+        root \
+        etc/resolv.conf \
+        etc/bootos_persist_dev \
+        2>/dev/null || true
+
+    # Mirror copy in bootos directory
+    cp "$mnt_target/bootos-persist.tgz" "$mnt_target/bootos/bootos-persist.tgz" 2>/dev/null || true
+
+    cat <<EOF > "$mnt_target/bootos/bootos-persist.info"
+SavedAt: $(date)
+Device: $target_part
+Kernel: $(uname -r)
+BootOS: Persistent State
+EOF
+
+    sync
+    umount "$mnt_target" 2>/dev/null || true
+    rm -rf "$mnt_target"
+
+    echo -e "\n${GREEN}✓ Persistence successfully saved to ${BOLD}${target_part}${RESET}${GREEN}!${RESET}"
+    echo -e "${GREEN}All changes will automatically restore into DRAM on restart.${RESET}"
+    if [ "$mode" != "auto" ]; then
+        echo -e "\nPress Enter to continue..."
+        read -r _
+    else
+        sleep 1
+    fi
+    return 0
+}
+
 # Main Loop
 while true; do
     show_banner
@@ -965,10 +1148,11 @@ while true; do
     echo -e "  ${GREEN}[7]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
     echo -e "  ${GREEN}[8]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
     echo -e "  ${GREEN}[9]${RESET} Open Root Terminal Shell"
-    echo -e "  ${GREEN}[10]${RESET} Reboot System"
-    echo -e "  ${GREEN}[11]${RESET} Power Off"
+    echo -e "  ${GREEN}[10]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
+    echo -e "  ${GREEN}[11]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
+    echo -e "  ${GREEN}[12]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [1-11]: "
+    echo -n " Please select an option [1-12]: "
     read -r choice
 
     case "$choice" in
@@ -994,11 +1178,15 @@ while true; do
             echo -e "\nReturning to menu..."
             sleep 1
             ;;
-        10)
-            echo -e "\n${YELLOW}Rebooting...${RESET}"
+        10|"save"|"persist") save_persistent_state ;;
+        11|"reboot")
+            echo -e "\n${YELLOW}Preparing to reboot...${RESET}"
+            save_persistent_state "auto"
+            echo -e "${YELLOW}Rebooting system...${RESET}"
+            sleep 1
             reboot
             ;;
-        11)
+        12|"poweroff"|"shutdown")
             echo -e "\n${YELLOW}Shutting down...${RESET}"
             poweroff
             ;;

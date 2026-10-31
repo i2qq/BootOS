@@ -72,7 +72,10 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     eudev-hwids \
     xsetroot \
     adwaita-icon-theme \
-    xprop
+    xprop \
+    e2fsprogs \
+    dosfstools \
+    tar
 "
 
 # Copy kernel out to ISO boot folder
@@ -181,7 +184,7 @@ else
 fi
 
 # 3. Explicitly probe core storage, loop & filesystem modules
-for mod in loop isofs squashfs overlay; do
+for mod in loop isofs squashfs overlay ext4 vfat fat nls_cp437 nls_iso8859_1 nls_utf8; do
     modprobe $mod 2>/dev/null || true
 done
 
@@ -190,6 +193,40 @@ done
 for i in 0 1 2 3 4 5 6 7; do
     [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i" 2>/dev/null || true
 done
+
+# 3b. Probe for and restore BootOS persistent storage if available
+echo "Scanning storage devices for BootOS persistent state..."
+PERSIST_DEV=""
+for part in $(ls /dev/sd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/vd[a-z][0-9]* /dev/xvd[a-z][0-9]* 2>/dev/null); do
+    [ -b "$part" ] || continue
+    mkdir -p /mnt/p_check
+    if mount -o ro "$part" /mnt/p_check 2>/dev/null || \
+       mount -t ext4 -o ro "$part" /mnt/p_check 2>/dev/null || \
+       mount -t vfat -o ro "$part" /mnt/p_check 2>/dev/null; then
+        pfile=""
+        if [ -f "/mnt/p_check/bootos-persist.tgz" ]; then
+            pfile="/mnt/p_check/bootos-persist.tgz"
+        elif [ -f "/mnt/p_check/bootos/bootos-persist.tgz" ]; then
+            pfile="/mnt/p_check/bootos/bootos-persist.tgz"
+        fi
+
+        if [ -n "$pfile" ]; then
+            echo "--> Restoring persistent configuration from $part into DRAM..."
+            tar -xzf "$pfile" -C / 2>/dev/null || true
+            mkdir -p /etc
+            echo "$part" > /etc/bootos_persist_dev
+            PERSIST_DEV="$part"
+            umount /mnt/p_check 2>/dev/null || true
+            rm -rf /mnt/p_check
+            break
+        fi
+        umount /mnt/p_check 2>/dev/null || true
+    fi
+    rm -rf /mnt/p_check
+done
+if [ -n "$PERSIST_DEV" ]; then
+    echo "✓ Persistent data restored from $PERSIST_DEV"
+fi
 
 # 4a. Explicitly probe mouse, keyboard, and input devices (PS/2, USB, VirtualBox, VMware)
 for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse joydev; do

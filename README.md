@@ -70,17 +70,20 @@ If your USB already has [Ventoy](https://www.ventoy.net/) installed, simply copy
  Network: Connected (192.168.1.150)
  ------------------------------------------------------------
  Main Menu:
-  [1] Download & Boot Lubuntu (Fast / Best for Old PCs)
-  [2] Download & Boot Ubuntu 24.04 LTS
-  [3] Download & Boot Custom Kernel/Initrd
-  [4] Flash Downloaded ISO to Internal Hard Drive / SSD
-  [5] Setup Network (Ethernet DHCP / Diagnostics)
-  [6] Launch iPXE / Netboot.xyz (Hundreds of OSs on-demand)
-  [7] Open Root Terminal Shell
-  [8] Reboot System
-  [9] Power Off
+  [1] Install / Boot OS from GitHub Release ISO
+  [2] Download & Boot Lubuntu (Fast / Best for Old PCs)
+  [3] Download & Boot Ubuntu 24.04 LTS
+  [4] Launch Chromium Web Browser (GUI)
+  [5] Flash Downloaded ISO to Internal Hard Drive / SSD
+  [6] Download & Boot Custom Kernel/Initrd
+  [7] Setup Network (Ethernet DHCP / Diagnostics)
+  [8] Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)
+  [9] Open Root Terminal Shell
+  [10] Save Persistent State to Storage Drive
+  [11] Reboot System (Auto-Saves to Disk)
+  [12] Power Off
 
- Please select an option [1-9]:
+ Please select an option [1-12]:
 ```
 
 ---
