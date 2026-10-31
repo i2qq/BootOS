@@ -5,6 +5,7 @@
 /build/
 /tmp/
 /bootloader/boot/initramfs.gz
+/bootloader/boot/vmlinuz
 # Python cache
 __pycache__/
 *.pyc
