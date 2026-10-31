@@ -48,6 +48,7 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     usbutils \
     wpa_supplicant \
     ca-certificates \
+    jq \
     dialog \
     ncurses
 "

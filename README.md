@@ -13,6 +13,7 @@
 - **100% Loaded into DRAM**: The entire Linux root filesystem is loaded into RAM upon boot. The USB stick is immediately freed and can be safely unplugged!
 - **Dual Boot Support**: Fully bootable on **Legacy BIOS** (old PCs) and modern **UEFI** systems.
 - **Direct OS Booting (`kexec`)**: Uses the Linux `kexec` subsystem to jump directly from BootOS into a newly downloaded OS without restarting the PC hardware or BIOS.
+- **GitHub Release ISO Installer**: Provide any GitHub repo (e.g. `owner/repo`) that has an OS `.iso` in its releases; BootOS will auto-detect the release, download the ISO, and either flash it to the internal disk or live-boot into it in RAM!
 - **Curated OS Library**:
   - **Lubuntu** (Super-lightweight desktop, ideal for old PCs with limited RAM/CPU)
   - **Ubuntu 24.04 LTS** (Desktop or Server)

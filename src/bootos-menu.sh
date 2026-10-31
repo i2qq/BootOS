@@ -85,7 +85,12 @@ boot_kexec() {
     echo -e "Initrd : $initrd_path"
     echo -e "Params : $cmdline"
 
-    kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline"
+    if [ -n "$initrd_path" ] && [ -f "$initrd_path" ]; then
+        kexec -l "$kernel_path" --initrd="$initrd_path" --command-line="$cmdline"
+    else
+        kexec -l "$kernel_path" --command-line="$cmdline"
+    fi
+
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Starting target operating system now!${RESET}"
         sleep 2
@@ -93,6 +98,263 @@ boot_kexec() {
     else
         echo -e "${RED}Failed to load kernel into kexec!${RESET}"
     fi
+}
+
+# ==============================================================================
+# GitHub Release ISO Downloader & Installer
+# ==============================================================================
+github_release_os_installer() {
+    show_banner
+    echo -e "${YELLOW}=== Install / Boot OS from GitHub Release ISO ===${RESET}\n"
+
+    if ! check_internet; then
+        echo -e "${RED}Network is not ready! Setting up network first...${RESET}"
+        setup_network
+    fi
+
+    echo -e "Enter the GitHub repository URL or path:"
+    echo -e "  Examples: ${CYAN}owner/repo${RESET}  or  ${CYAN}https://github.com/owner/repo${RESET}"
+    echo -e "  Or release: ${CYAN}https://github.com/owner/repo/releases/tag/v1.0${RESET}"
+    echo -n "Repo: "
+    read -r raw_repo
+
+    if [ -z "$raw_repo" ]; then
+        echo "Aborted."
+        sleep 1
+        return
+    fi
+
+    # Parse owner, repo, and optional tag
+    clean_input=$(echo "$raw_repo" | sed -e 's|^https://github.com/||' -e 's|^http://github.com/||' -e 's|\.git$||' -e 's|/$||')
+    
+    owner=$(echo "$clean_input" | awk -F'/' '{print $1}')
+    repo=$(echo "$clean_input" | awk -F'/' '{print $2}')
+    tag=""
+
+    if echo "$clean_input" | grep -q '/releases/tag/'; then
+        tag=$(echo "$clean_input" | sed -e 's|.*/releases/tag/||')
+    fi
+
+    if [ -z "$owner" ] || [ -z "$repo" ]; then
+        echo -e "${RED}Invalid repository format! Expected 'owner/repo' or GitHub URL.${RESET}"
+        echo "Press Enter to return..."
+        read -r _
+        return
+    fi
+
+    echo -e "\n${CYAN}Querying GitHub API for ${owner}/${repo}...${RESET}"
+    
+    # Check for optional token
+    auth_header=""
+    if [ -n "$GITHUB_TOKEN" ]; then
+        auth_header="Authorization: token $GITHUB_TOKEN"
+    fi
+
+    api_url="https://api.github.com/repos/${owner}/${repo}/releases/latest"
+    if [ -n "$tag" ]; then
+        api_url="https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}"
+    fi
+
+    release_json="/tmp/gh_release.json"
+    if [ -n "$auth_header" ]; then
+        curl -sSL -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
+    else
+        curl -sSL -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
+    fi
+
+    # Fallback to first release if /latest is 404 (e.g. only pre-releases)
+    if grep -q '"message": "Not Found"' "$release_json" && [ -z "$tag" ]; then
+        echo "Latest release not found, checking all releases..."
+        curl -sSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${owner}/${repo}/releases" -o "/tmp/gh_releases_all.json"
+        if [ -s "/tmp/gh_releases_all.json" ]; then
+            # Extract first release object
+            if command -v jq >/dev/null 2>&1; then
+                jq '.[0]' /tmp/gh_releases_all.json > "$release_json" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # Parse release title and tag
+    rel_name=""
+    rel_tag=""
+    if command -v jq >/dev/null 2>&1; then
+        rel_name=$(jq -r '.name // empty' "$release_json" 2>/dev/null)
+        rel_tag=$(jq -r '.tag_name // empty' "$release_json" 2>/dev/null)
+    fi
+
+    if [ -z "$rel_tag" ]; then
+        rel_tag=$(grep -o '"tag_name": *"[^"]*"' "$release_json" | head -n1 | cut -d'"' -f4)
+    fi
+    if [ -z "$rel_name" ]; then
+        rel_name="$rel_tag"
+    fi
+
+    if [ -z "$rel_tag" ]; then
+        echo -e "${RED}Could not find any release in https://github.com/${owner}/${repo}${RESET}"
+        echo -e "Response preview:"
+        head -n 5 "$release_json"
+        echo "Press Enter to return..."
+        read -r _
+        return
+    fi
+
+    echo -e "${GREEN}✓ Found Release:${RESET} ${BOLD}${rel_name}${RESET} (${rel_tag})"
+
+    # Find ISO / IMG assets
+    asset_list="/tmp/gh_assets.txt"
+    rm -f "$asset_list"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.assets[] | select(.name | test("\\.(iso|img|raw)$"; "i")) | "\(.name)|\(.size)|\(.browser_download_url)"' "$release_json" > "$asset_list" 2>/dev/null || true
+    fi
+
+    # Fallback parsing if jq not present or empty
+    if [ ! -s "$asset_list" ]; then
+        awk '
+            /"name":/ { gsub(/[",]/,"",$2); name=$2 }
+            /"size":/ { gsub(/[",]/,"",$2); size=$2 }
+            /"browser_download_url":/ {
+                gsub(/[",]/,"",$2); url=$2;
+                if (name ~ /\.(iso|img|raw)$/i) {
+                    print name "|" size "|" url;
+                }
+            }
+        ' "$release_json" > "$asset_list"
+    fi
+
+    count=$(wc -l < "$asset_list")
+
+    if [ "$count" -eq 0 ]; then
+        echo -e "${RED}No .iso or .img files found in release '${rel_tag}'!${RESET}"
+        echo -e "Available assets in release:"
+        if command -v jq >/dev/null 2>&1; then
+            jq -r '.assets[].name' "$release_json"
+        else
+            grep -o '"name": *"[^"]*"' "$release_json" | cut -d'"' -f4
+        fi
+        echo -e "\nPress Enter to return..."
+        read -r _
+        return
+    fi
+
+    echo -e "\n${CYAN}Available OS Images in this Release:${RESET}"
+    i=1
+    while IFS='|' read -r aname asize aurl; do
+        size_mb=$((asize / 1024 / 1024))
+        echo -e "  [${GREEN}$i${RESET}] $aname (${YELLOW}${size_mb} MB${RESET})"
+        i=$((i + 1))
+    done < "$asset_list"
+
+    selected_idx=1
+    if [ "$count" -gt 1 ]; then
+        echo -n "Select image [1-$count]: "
+        read -r selected_idx
+    fi
+
+    selected_line=$(sed -n "${selected_idx}p" "$asset_list")
+    if [ -z "$selected_line" ]; then
+        echo -e "${RED}Invalid selection!${RESET}"
+        read -r _
+        return
+    fi
+
+    selected_name=$(echo "$selected_line" | cut -d'|' -f1)
+    selected_size=$(echo "$selected_line" | cut -d'|' -f2)
+    selected_url=$(echo "$selected_line" | cut -d'|' -f3)
+
+    echo -e "\n${BOLD}Selected:${RESET} $selected_name"
+    echo -e "${CYAN}What would you like to do with this OS image?${RESET}"
+    echo -e "  ${GREEN}[1]${RESET} Flash & Install directly to Hard Drive / SSD (/dev/sda)"
+    echo -e "  ${GREEN}[2]${RESET} Live DRAM Boot (Mount in RAM and kexec into it)"
+    echo -e "  ${GREEN}[3]${RESET} Download ISO to local storage"
+    echo -e "  ${GREEN}[4]${RESET} Back to Menu"
+    echo -n "Choice [1-4]: "
+    read -r action_choice
+
+    case "$action_choice" in
+        1)
+            # Flash directly to disk
+            echo -e "\n${YELLOW}=== Storage Drives Detected ===${RESET}"
+            lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null || fdisk -l | grep "Disk /dev"
+            echo ""
+            echo "Enter target drive to install this OS to (e.g. /dev/sda, /dev/nvme0n1):"
+            read -r target_dev
+
+            if [ ! -b "$target_dev" ]; then
+                echo -e "${RED}Error: '$target_dev' is not a valid block device!${RESET}"
+                read -r _
+                return
+            fi
+
+            echo -e "${RED}${BOLD}WARNING: Writing $selected_name will ERASE ALL DATA on $target_dev!${RESET}"
+            echo -n "Type 'YES' to proceed with installation: "
+            read -r confirm
+            if [ "$confirm" != "YES" ]; then
+                echo "Canceled."
+                read -r _
+                return
+            fi
+
+            echo -e "\n${GREEN}Streaming and writing $selected_name to $target_dev...${RESET}"
+            curl -L "$selected_url" | dd of="$target_dev" bs=4M status=progress conv=fdatasync
+            sync
+            echo -e "\n${GREEN}✓ Installation complete!${RESET}"
+            echo -e "You can now reboot your PC and it will boot into your newly installed OS from $target_dev."
+            echo "Press Enter to return..."
+            read -r _
+            ;;
+        2)
+            # Live DRAM boot via kexec
+            echo -e "\n${GREEN}Downloading $selected_name into DRAM (/tmp/target_os.iso)...${RESET}"
+            curl -L -o /tmp/target_os.iso "$selected_url"
+            
+            if [ -s /tmp/target_os.iso ]; then
+                echo -e "${CYAN}Extracting kernel and initrd from ISO...${RESET}"
+                mkdir -p /tmp/gh_mount /tmp/kexec_boot
+                mount -o loop /tmp/target_os.iso /tmp/gh_mount
+
+                # Search for kernel (vmlinuz, linux)
+                k_file=$(find /tmp/gh_mount -type f \( -name "vmlinuz*" -o -name "linux" -o -name "bzImage" \) | head -n1)
+                i_file=$(find /tmp/gh_mount -type f \( -name "initrd*" -o -name "initramfs*" \) | head -n1)
+
+                if [ -n "$k_file" ]; then
+                    echo "Found Kernel: $k_file"
+                    cp "$k_file" /tmp/kexec_boot/vmlinuz
+                    if [ -n "$i_file" ]; then
+                        echo "Found Initrd: $i_file"
+                        cp "$i_file" /tmp/kexec_boot/initrd
+                    fi
+                    umount /tmp/gh_mount
+
+                    echo -e "\n${CYAN}Boot parameters (press Enter for default 'boot=casper toram iso-scan/filename=/tmp/target_os.iso quiet'):${RESET}"
+                    read -r user_params
+                    [ -z "$user_params" ] && user_params="boot=casper toram iso-scan/filename=/tmp/target_os.iso quiet splash"
+
+                    boot_kexec "/tmp/kexec_boot/vmlinuz" "/tmp/kexec_boot/initrd" "$user_params"
+                else
+                    umount /tmp/gh_mount
+                    echo -e "${RED}Could not locate standard kernel inside the ISO!${RESET}"
+                    read -r _
+                fi
+            else
+                echo -e "${RED}Failed to download ISO!${RESET}"
+                read -r _
+            fi
+            ;;
+        3)
+            echo "Enter directory to save ISO (default /tmp):"
+            read -r dest_dir
+            [ -z "$dest_dir" ] && dest_dir="/tmp"
+            mkdir -p "$dest_dir"
+            echo -e "${GREEN}Downloading $selected_name to $dest_dir...${RESET}"
+            curl -L -o "${dest_dir}/${selected_name}" "$selected_url"
+            echo -e "${GREEN}Saved to ${dest_dir}/${selected_name}!${RESET}"
+            read -r _
+            ;;
+        *)
+            return
+            ;;
+    esac
 }
 
 download_and_boot_lubuntu() {
@@ -108,7 +370,7 @@ download_and_boot_lubuntu() {
 
     echo -e "${CYAN}Choose Lubuntu Boot Mode:${RESET}"
     echo " 1) Fast Netboot (Downloads ~80MB kernel+initrd, installs over internet)"
-    echo " 2) Live ISO to RAM (Downloads full ~2.5GB Live ISO into DRAM - needs >=4GB RAM)"
+    echo " 2) Live ISO to RAM (Downloads full Live ISO into DRAM - needs >=4GB RAM)"
     echo " 3) Back to Menu"
     echo -n "Select [1-3]: "
     read -r mode
@@ -116,11 +378,9 @@ download_and_boot_lubuntu() {
     case "$mode" in
         1)
             echo -e "${GREEN}Fetching Lubuntu/Ubuntu Netboot Assets...${RESET}"
-            # Ubuntu netboot assets
             VMLINUZ_URL="https://archive.ubuntu.com/ubuntu/dists/noble/main/installer-amd64/current/legacy-images/netboot/ubuntu-installer/amd64/linux"
             INITRD_URL="https://archive.ubuntu.com/ubuntu/dists/noble/main/installer-amd64/current/legacy-images/netboot/ubuntu-installer/amd64/initrd.gz"
             
-            # Alternative: Debian/Ubuntu mini netboot
             echo "Downloading netboot kernel..."
             wget -q --show-progress -O vmlinuz "$VMLINUZ_URL" || curl -L -o vmlinuz "$VMLINUZ_URL"
             echo "Downloading netboot initrd..."
@@ -181,7 +441,6 @@ download_and_boot_ubuntu() {
 
     case "$ub_choice" in
         1)
-            # Ubuntu Netboot
             echo -e "${GREEN}Downloading Ubuntu Noble Netboot kernel & initrd...${RESET}"
             KERNEL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
             INITRD="https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-initrd-generic"
@@ -284,6 +543,7 @@ flash_drive_utility() {
 while true; do
     show_banner
     echo -e " ${BOLD}Main Menu:${RESET}"
+    echo -e "  ${MAGENTA}[★]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
     echo -e "  ${GREEN}[1]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
     echo -e "  ${GREEN}[2]${RESET} Download & Boot Ubuntu 24.04 LTS"
     echo -e "  ${GREEN}[3]${RESET} Download & Boot Custom Kernel/Initrd"
@@ -294,10 +554,11 @@ while true; do
     echo -e "  ${GREEN}[8]${RESET} Reboot System"
     echo -e "  ${GREEN}[9]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [1-9]: "
+    echo -n " Please select an option [★, 1-9]: "
     read -r choice
 
     case "$choice" in
+        "*"|"star"|"g"|"G"|"0") github_release_os_installer ;;
         1) download_and_boot_lubuntu ;;
         2) download_and_boot_ubuntu ;;
         3) custom_os_downloader ;;
@@ -308,7 +569,6 @@ while true; do
             if command -v ipxe >/dev/null 2>&1; then
                 ipxe
             else
-                # Download netboot.xyz lkrn and kexec
                 mkdir -p /tmp/netboot
                 wget -O /tmp/netboot/netboot.xyz.lkrn https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn 2>/dev/null || curl -L -o /tmp/netboot/netboot.xyz.lkrn https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn
                 kexec -l /tmp/netboot/netboot.xyz.lkrn
@@ -328,8 +588,13 @@ while true; do
             poweroff
             ;;
         *)
-            echo -e "\n${RED}Invalid option!${RESET}"
-            sleep 1
+            # Also allow typing 'gh' or 'github'
+            if [ "$choice" = "gh" ] || [ "$choice" = "github" ]; then
+                github_release_os_installer
+            else
+                echo -e "\n${RED}Invalid option!${RESET}"
+                sleep 1
+            fi
             ;;
     esac
 done
