@@ -32,7 +32,7 @@ https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
 EOF
 
 # 3. Chroot and install essential tools & Linux Kernel
-echo "--> Installing kernel and runtime packages inside rootfs..."
+echo "--> Installing kernel, networking drivers, and runtime packages..."
 chroot "${ROOTFS_DIR}" /bin/sh -c "
   apk update
   apk add --no-cache \
@@ -57,7 +57,7 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
 cp "${ROOTFS_DIR}/boot"/vmlinuz-lts "${ISO_ROOT}/boot/vmlinuz"
 
 # Strip giant graphics/telecom firmware to keep BootOS under ~100MB while keeping ethernet & Wi-Fi
-echo "--> Optimizing firmware footprint..."
+echo "--> Optimizing firmware footprint (keeping network & storage drivers)..."
 rm -rf "${ROOTFS_DIR}/lib/firmware/amdgpu" 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware/radeon" 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware/nvidia" 2>/dev/null || true
@@ -66,7 +66,39 @@ rm -rf "${ROOTFS_DIR}/lib/firmware/netronome" 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware/qcom" 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware/liquidio" 2>/dev/null || true
 
-# 4. Install BootOS Startup Script and Auto-Login
+# 4. Create robust udhcpc default.script so DHCP sets IP and DNS properly
+mkdir -p "${ROOTFS_DIR}/usr/share/udhcpc"
+cat <<'EOF' > "${ROOTFS_DIR}/usr/share/udhcpc/default.script"
+#!/bin/sh
+[ -z "$1" ] && exit 1
+
+RESOLV_CONF="/etc/resolv.conf"
+
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface" 2>/dev/null
+        ;;
+    renew|bound)
+        ip addr replace "$ip/${mask:-24}" dev "$interface" 2>/dev/null || ip addr add "$ip/${mask:-24}" dev "$interface" 2>/dev/null
+        if [ -n "$router" ]; then
+            ip route replace default via "$router" dev "$interface" 2>/dev/null || ip route add default via "$router" dev "$interface" 2>/dev/null
+        fi
+        if [ -n "$dns" ]; then
+            echo -n > "$RESOLV_CONF"
+            for d in $dns; do
+                echo "nameserver $d" >> "$RESOLV_CONF"
+            done
+        else
+            echo "nameserver 1.1.1.1" > "$RESOLV_CONF"
+            echo "nameserver 8.8.8.8" >> "$RESOLV_CONF"
+        fi
+        ;;
+esac
+exit 0
+EOF
+chmod +x "${ROOTFS_DIR}/usr/share/udhcpc/default.script"
+
+# Install BootOS Startup Script and Auto-Login
 echo "--> Installing BootOS terminal interface and auto-login configuration..."
 cp "${WORKSPACE_DIR}/src/bootos-menu.sh" "${ROOTFS_DIR}/usr/local/bin/bootos"
 chmod +x "${ROOTFS_DIR}/usr/local/bin/bootos"
@@ -77,7 +109,6 @@ cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
 ::sysinit:/sbin/rc boot
 ::wait:/sbin/rc default
 
-# BootOS auto-launch on console / tty1
 tty1::respawn:/usr/local/bin/bootos
 tty2::respawn:/sbin/getty 38400 tty2
 tty3::respawn:/sbin/getty 38400 tty3
@@ -86,7 +117,6 @@ tty3::respawn:/sbin/getty 38400 tty3
 ::shutdown:/sbin/rc shutdown
 EOF
 
-# Auto-launch profile
 cat <<'EOF' > "${ROOTFS_DIR}/etc/profile.d/bootos.sh"
 if [ "$(tty)" = "/dev/tty1" ]; then
     /usr/local/bin/bootos
@@ -94,20 +124,9 @@ fi
 EOF
 chmod +x "${ROOTFS_DIR}/etc/profile.d/bootos.sh"
 
-# Hostname
 echo "bootos" > "${ROOTFS_DIR}/etc/hostname"
 
-# Loopback & Ethernet DHCP
-mkdir -p "${ROOTFS_DIR}/etc/network"
-cat <<'EOF' > "${ROOTFS_DIR}/etc/network/interfaces"
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet dhcp
-EOF
-
-# 5. Create /init wrapper and pack rootfs into DRAM-resident initramfs
+# 5. Create /init wrapper with hardware detection & module auto-loading
 echo "--> Packing complete OS into RAM-resident initramfs..."
 cat <<'EOF' > "${ROOTFS_DIR}/init"
 #!/bin/sh
@@ -117,14 +136,43 @@ mount -t devtmpfs none /dev
 mount -t tmpfs none /tmp
 mount -t tmpfs none /run
 
-# Bring up loopback
+# 1. Generate module dependencies
+KERNEL_VER=$(uname -r)
+depmod -a "$KERNEL_VER" 2>/dev/null || true
+
+# 2. Trigger mdev coldplug device detection & module auto-loading
+echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
+mdev -s 2>/dev/null || true
+
+# 3. Explicitly probe common virtual and physical NIC modules
+for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# 4. Probe PCI modaliases
+find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
+
+# 5. Bring up loopback
 ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null
+
+# 6. Default DNS
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+
+# 7. Auto-configure network interfaces via DHCP
+for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
+    ip link set "$iface" up 2>/dev/null
+    udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
+done
 
 # Clean console and start BootOS
 clear
 exec /usr/local/bin/bootos
 EOF
 chmod +x "${ROOTFS_DIR}/init"
+
+# Run depmod inside rootfs before packing
+chroot "${ROOTFS_DIR}" depmod -a 2>/dev/null || true
 
 # Pack initramfs using cpio
 (cd "${ROOTFS_DIR}" && find . -print0 | cpio --null -H newc -o | gzip -9) > "${ISO_ROOT}/boot/initramfs.gz"

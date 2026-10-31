@@ -23,12 +23,12 @@ get_net_info() {
     if [ -n "$ip_addr" ]; then
         echo -e "${GREEN}Connected ($ip_addr)${RESET}"
     else
-        echo -e "${RED}Disconnected (Run Option 6)${RESET}"
+        echo -e "${RED}Disconnected (Run Option 5)${RESET}"
     fi
 }
 
 check_internet() {
-    if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
+    if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
         return 0
     else
         return 1
@@ -53,17 +53,47 @@ show_banner() {
 }
 
 setup_network() {
-    echo -e "\n${YELLOW}Configuring Network Interfaces...${RESET}"
-    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
-        echo -e "Bringing up $iface..."
-        ip link set "$iface" up
-        udhcpc -i "$iface" -n -q -t 5 2>/dev/null || dhclient -1 "$iface" 2>/dev/null
+    echo -e "\n${YELLOW}Scanning for hardware and probing network drivers...${RESET}"
+    depmod -a 2>/dev/null || true
+
+    # Explicitly load common network modules (VirtualBox Intel PRO/1000, VirtIO, Realtek, etc.)
+    for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
+        modprobe "$mod" 2>/dev/null || true
     done
+
+    # Probe all PCI modaliases
+    find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
+    sleep 1
+
+    echo -e "${YELLOW}Configuring Network Interfaces via DHCP...${RESET}"
+    ifaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo')
+    
+    if [ -z "$ifaces" ]; then
+        echo -e "${RED}No network interfaces detected!${RESET}"
+        echo -e "If running in a VM, check that Network Adapter is enabled (NAT or Bridged)."
+    fi
+
+    for iface in $ifaces; do
+        echo -e "Bringing up ${BOLD}$iface${RESET}..."
+        ip link set "$iface" up 2>/dev/null
+        if [ -f /usr/share/udhcpc/default.script ]; then
+            udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -n -q -t 5 2>/dev/null || true
+        else
+            udhcpc -i "$iface" -n -q -t 5 2>/dev/null || true
+        fi
+    done
+
+    # Fallback default DNS
+    if [ ! -s /etc/resolv.conf ]; then
+        echo "nameserver 1.1.1.1" > /etc/resolv.conf
+        echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+    fi
 
     if check_internet; then
         echo -e "${GREEN}✓ Internet connection established!${RESET}"
     else
-        echo -e "${RED}✗ Could not reach internet. Please plug in Ethernet cable or configure Wi-Fi.${RESET}"
+        echo -e "${RED}✗ Could not reach internet.${RESET}"
+        echo -e "In VirtualBox: Ensure VM Settings -> Network -> 'Attached to: NAT' or 'Bridged Adapter'."
     fi
     echo -e "\nPress Enter to continue..."
     read -r _
@@ -108,13 +138,13 @@ github_release_os_installer() {
     echo -e "${YELLOW}=== Install / Boot OS from GitHub Release ISO ===${RESET}\n"
 
     if ! check_internet; then
-        echo -e "${RED}Network is not ready! Setting up network first...${RESET}"
+        echo -e "${RED}Network is not ready! Attempting auto-configuration...${RESET}"
         setup_network
     fi
 
     echo -e "Enter the GitHub repository URL or path:"
     echo -e "  Examples: ${CYAN}owner/repo${RESET}  or  ${CYAN}https://github.com/owner/repo${RESET}"
-    echo -e "  Or release: ${CYAN}https://github.com/owner/repo/releases/tag/v1.0${RESET}"
+    echo -e "  Or tag:   ${CYAN}https://github.com/owner/repo/releases/tag/v1.0${RESET}"
     echo -n "Repo: "
     read -r raw_repo
 
@@ -124,9 +154,7 @@ github_release_os_installer() {
         return
     fi
 
-    # Parse owner, repo, and optional tag
     clean_input=$(echo "$raw_repo" | sed -e 's|^https://github.com/||' -e 's|^http://github.com/||' -e 's|\.git$||' -e 's|/$||')
-    
     owner=$(echo "$clean_input" | awk -F'/' '{print $1}')
     repo=$(echo "$clean_input" | awk -F'/' '{print $2}')
     tag=""
@@ -144,7 +172,6 @@ github_release_os_installer() {
 
     echo -e "\n${CYAN}Querying GitHub API for ${owner}/${repo}...${RESET}"
     
-    # Check for optional token
     auth_header=""
     if [ -n "$GITHUB_TOKEN" ]; then
         auth_header="Authorization: token $GITHUB_TOKEN"
@@ -162,19 +189,16 @@ github_release_os_installer() {
         curl -sSL -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
     fi
 
-    # Fallback to first release if /latest is 404 (e.g. only pre-releases)
     if grep -q '"message": "Not Found"' "$release_json" && [ -z "$tag" ]; then
         echo "Latest release not found, checking all releases..."
         curl -sSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${owner}/${repo}/releases" -o "/tmp/gh_releases_all.json"
         if [ -s "/tmp/gh_releases_all.json" ]; then
-            # Extract first release object
             if command -v jq >/dev/null 2>&1; then
                 jq '.[0]' /tmp/gh_releases_all.json > "$release_json" 2>/dev/null || true
             fi
         fi
     fi
 
-    # Parse release title and tag
     rel_name=""
     rel_tag=""
     if command -v jq >/dev/null 2>&1; then
@@ -191,7 +215,6 @@ github_release_os_installer() {
 
     if [ -z "$rel_tag" ]; then
         echo -e "${RED}Could not find any release in https://github.com/${owner}/${repo}${RESET}"
-        echo -e "Response preview:"
         head -n 5 "$release_json"
         echo "Press Enter to return..."
         read -r _
@@ -200,7 +223,6 @@ github_release_os_installer() {
 
     echo -e "${GREEN}✓ Found Release:${RESET} ${BOLD}${rel_name}${RESET} (${rel_tag})"
 
-    # Find ISO / IMG assets
     asset_list="/tmp/gh_assets.txt"
     rm -f "$asset_list"
 
@@ -208,7 +230,6 @@ github_release_os_installer() {
         jq -r '.assets[] | select(.name | test("\\.(iso|img|raw)$"; "i")) | "\(.name)|\(.size)|\(.browser_download_url)"' "$release_json" > "$asset_list" 2>/dev/null || true
     fi
 
-    # Fallback parsing if jq not present or empty
     if [ ! -s "$asset_list" ]; then
         awk '
             /"name":/ { gsub(/[",]/,"",$2); name=$2 }
@@ -273,7 +294,6 @@ github_release_os_installer() {
 
     case "$action_choice" in
         1)
-            # Flash directly to disk
             echo -e "\n${YELLOW}=== Storage Drives Detected ===${RESET}"
             lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null || fdisk -l | grep "Disk /dev"
             echo ""
@@ -304,7 +324,6 @@ github_release_os_installer() {
             read -r _
             ;;
         2)
-            # Live DRAM boot via kexec
             echo -e "\n${GREEN}Downloading $selected_name into DRAM (/tmp/target_os.iso)...${RESET}"
             curl -L -o /tmp/target_os.iso "$selected_url"
             
@@ -313,7 +332,6 @@ github_release_os_installer() {
                 mkdir -p /tmp/gh_mount /tmp/kexec_boot
                 mount -o loop /tmp/target_os.iso /tmp/gh_mount
 
-                # Search for kernel (vmlinuz, linux)
                 k_file=$(find /tmp/gh_mount -type f \( -name "vmlinuz*" -o -name "linux" -o -name "bzImage" \) | head -n1)
                 i_file=$(find /tmp/gh_mount -type f \( -name "initrd*" -o -name "initramfs*" \) | head -n1)
 
@@ -543,28 +561,28 @@ flash_drive_utility() {
 while true; do
     show_banner
     echo -e " ${BOLD}Main Menu:${RESET}"
-    echo -e "  ${MAGENTA}[★]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
-    echo -e "  ${GREEN}[1]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
-    echo -e "  ${GREEN}[2]${RESET} Download & Boot Ubuntu 24.04 LTS"
-    echo -e "  ${GREEN}[3]${RESET} Download & Boot Custom Kernel/Initrd"
-    echo -e "  ${GREEN}[4]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
+    echo -e "  ${GREEN}[1]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
+    echo -e "  ${GREEN}[2]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
+    echo -e "  ${GREEN}[3]${RESET} Download & Boot Ubuntu 24.04 LTS"
+    echo -e "  ${GREEN}[4]${RESET} Download & Boot Custom Kernel/Initrd"
     echo -e "  ${GREEN}[5]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
-    echo -e "  ${GREEN}[6]${RESET} Launch iPXE / Netboot.xyz (Hundreds of OSs on-demand)"
-    echo -e "  ${GREEN}[7]${RESET} Open Root Terminal Shell"
-    echo -e "  ${GREEN}[8]${RESET} Reboot System"
-    echo -e "  ${GREEN}[9]${RESET} Power Off"
+    echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
+    echo -e "  ${GREEN}[7]${RESET} Launch iPXE / Netboot.xyz (Hundreds of OSs on-demand)"
+    echo -e "  ${GREEN}[8]${RESET} Open Root Terminal Shell"
+    echo -e "  ${GREEN}[9]${RESET} Reboot System"
+    echo -e "  ${GREEN}[10]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [★, 1-9]: "
+    echo -n " Please select an option [1-10]: "
     read -r choice
 
     case "$choice" in
-        "*"|"star"|"g"|"G"|"0") github_release_os_installer ;;
-        1) download_and_boot_lubuntu ;;
-        2) download_and_boot_ubuntu ;;
-        3) custom_os_downloader ;;
-        4) flash_drive_utility ;;
-        5) setup_network ;;
-        6)
+        1|"0"|"gh"|"github"|"star"|"*") github_release_os_installer ;;
+        2) download_and_boot_lubuntu ;;
+        3) download_and_boot_ubuntu ;;
+        4) custom_os_downloader ;;
+        5|"net"|"network") setup_network ;;
+        6) flash_drive_utility ;;
+        7)
             echo -e "${GREEN}Chainloading netboot.xyz via iPXE...${RESET}"
             if command -v ipxe >/dev/null 2>&1; then
                 ipxe
@@ -575,26 +593,21 @@ while true; do
                 kexec -e
             fi
             ;;
-        7)
+        8)
             echo -e "\n${CYAN}Dropping to BootOS Terminal Shell. Type 'exit' to return to menu.${RESET}\n"
             /bin/sh
             ;;
-        8)
+        9)
             echo -e "\n${YELLOW}Rebooting...${RESET}"
             reboot
             ;;
-        9)
+        10)
             echo -e "\n${YELLOW}Shutting down...${RESET}"
             poweroff
             ;;
         *)
-            # Also allow typing 'gh' or 'github'
-            if [ "$choice" = "gh" ] || [ "$choice" = "github" ]; then
-                github_release_os_installer
-            else
-                echo -e "\n${RED}Invalid option!${RESET}"
-                sleep 1
-            fi
+            echo -e "\n${RED}Invalid option!${RESET}"
+            sleep 1
             ;;
     esac
 done
