@@ -402,9 +402,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (drives[targetIdx].isSystem) {
-        printf("\n[DANGER] PhysicalDrive%d is your Windows System Disk!\n", selectedDisk);
-        printf("BootOS Flasher strictly refuses to overwrite system drives.\n");
+    if (drives[targetIdx].isSystem || drives[targetIdx].letter == 'C' || drives[targetIdx].letter == 'c' || drives[targetIdx].letter == 'D' || drives[targetIdx].letter == 'd' || !drives[targetIdx].isUsb) {
+        printf("\n[DANGER] PhysicalDrive%d is a protected internal drive (C: or D:)!\n", selectedDisk);
+        printf("BootOS Flasher strictly refuses to touch internal storage drives.\n");
         printf("\nPress Enter to exit...");
         getchar();
         return 1;

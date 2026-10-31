@@ -29,14 +29,14 @@ foreach ($d in $disks) {
     $driveLetters = ($partitions | Where-Object { $_.DriveLetter } | ForEach-Object { "$($_.DriveLetter):" }) -join ", "
     if (-not $driveLetters) { $driveLetters = "-" }
     
-    $isSystem = $d.IsSystem -or $d.IsBoot -or ($partitions | Where-Object { $_.DriveLetter -eq 'C' })
-    $status = if ($isSystem) { "[SYSTEM / BLOCKED]" } elseif ($d.BusType -eq 'USB') { "[USB Flash Drive]" } else { "[Internal Disk]" }
+    $isProtected = $d.IsSystem -or $d.IsBoot -or ($partitions | Where-Object { $_.DriveLetter -in @('C', 'D') }) -or ($d.BusType -ne 'USB')
+    $status = if ($isProtected) { "[PROTECTED / BLOCKED]" } elseif ($d.BusType -eq 'USB') { "[USB Flash Drive]" } else { "[Internal Disk]" }
     $sizeGB = [math]::Round($d.Size / 1GB, 1)
 
-    $color = if ($isSystem) { "DarkRed" } elseif ($d.BusType -eq 'USB') { "Green" } else { "Gray" }
+    $color = if ($isProtected) { "DarkRed" } elseif ($d.BusType -eq 'USB') { "Green" } else { "Gray" }
     Write-Host (" [{0,-2}] {1,-10} {2,-7} {3,-32} {4,10}  {5}" -f $d.Number, $d.BusType, $driveLetters, $d.FriendlyName, $sizeGB, $status) -ForegroundColor $color
 
-    if (-not $isSystem -and $d.BusType -eq 'USB') {
+    if (-not $isProtected -and $d.BusType -eq 'USB') {
         $validTargets += $d.Number
     }
 }

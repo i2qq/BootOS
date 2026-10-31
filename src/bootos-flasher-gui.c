@@ -427,7 +427,8 @@ void RefreshDriveList(void) {
     int itemsAdded = 0;
 
     for (int i = 0; i < g_driveCount; i++) {
-        if (g_drives[i].isSystem) continue;
+        // Strictly shield C: and D: internal drives
+        if (g_drives[i].isSystem || g_drives[i].letter == 'C' || g_drives[i].letter == 'c' || g_drives[i].letter == 'D' || g_drives[i].letter == 'd' || !g_drives[i].isUsb) continue;
 
         char itemText[256];
         char letStr[16] = "";
@@ -502,8 +503,8 @@ void StartOperation(HWND hWnd, BOOL isRaw) {
     }
 
     GuiDriveInfo *target = &g_drives[driveIdx];
-    if (target->isSystem) {
-        MessageBoxA(hWnd, "Cannot write to the Windows system disk!", "System Disk Protected", MB_OK | MB_ICONERROR);
+    if (target->isSystem || target->letter == 'C' || target->letter == 'c' || target->letter == 'D' || target->letter == 'd' || !target->isUsb) {
+        MessageBoxA(hWnd, "Protected Drive: C: and D: internal drives are strictly shielded and cannot be modified!", "Drive Protected", MB_OK | MB_ICONERROR);
         return;
     }
 
