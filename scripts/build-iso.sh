@@ -51,7 +51,18 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     ca-certificates \
     jq \
     dialog \
-    ncurses
+    ncurses \
+    chromium \
+    font-noto \
+    font-dejavu \
+    xorg-server \
+    xinit \
+    xf86-video-modesetting \
+    xf86-video-vesa \
+    xf86-video-fbdev \
+    xf86-input-libinput \
+    openbox \
+    dbus
 "
 
 # Copy kernel out to ISO boot folder
@@ -99,10 +110,16 @@ exit 0
 EOF
 chmod +x "${ROOTFS_DIR}/usr/share/udhcpc/default.script"
 
-# Install BootOS Startup Script and Auto-Login
-echo "--> Installing BootOS terminal interface and auto-login configuration..."
+# Install BootOS Startup Script, Browser Launcher, and Auto-Login
+echo "--> Installing BootOS terminal interface and browser launcher..."
 cp "${WORKSPACE_DIR}/src/bootos-menu.sh" "${ROOTFS_DIR}/usr/local/bin/bootos"
 chmod +x "${ROOTFS_DIR}/usr/local/bin/bootos"
+cp "${WORKSPACE_DIR}/src/browser-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/browser"
+chmod +x "${ROOTFS_DIR}/usr/local/bin/browser"
+ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-launch"
+ln -sf /usr/local/bin/browser "${ROOTFS_DIR}/usr/local/bin/chromium-browser"
+mkdir -p "${ROOTFS_DIR}/tmp/.X11-unix" "${ROOTFS_DIR}/var/log"
+chmod 1777 "${ROOTFS_DIR}/tmp/.X11-unix"
 
 # Configure inittab
 cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
@@ -161,6 +178,14 @@ done
 for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
     modprobe $mod 2>/dev/null || true
 done
+
+# 4b. Explicitly probe graphics and display modules (VBox, Intel, AMD, generic DRM)
+for mod in vboxvideo drm drm_kms_helper bochs_drm virtio_gpu fb_sys_fops syscopyarea sysfillrect sysimgblt; do
+    modprobe $mod 2>/dev/null || true
+done
+
+mkdir -p /tmp/.X11-unix /var/log /run/user/0
+chmod 1777 /tmp/.X11-unix
 
 # 5. Probe PCI modaliases
 find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true

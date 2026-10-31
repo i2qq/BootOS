@@ -862,6 +862,43 @@ Enter GitHub repository or release URL (e.g. ${CYAN}i2qq/BootOS${RESET}):"
     esac
 }
 
+launch_browser() {
+    show_banner
+    echo -e "${YELLOW}=== Launch Chromium Web Browser (GUI) ===${RESET}\n"
+    if ! check_internet; then
+        echo -e "${YELLOW}Notice: Network is not connected yet.${RESET}"
+        echo -n "Would you like to configure network before opening browser? (Y/n): "
+        read -r net_choice
+        if [ "$net_choice" != "n" ] && [ "$net_choice" != "N" ]; then
+            setup_network
+        fi
+    fi
+
+    echo -e "Enter URL to open (or press Enter for default):"
+    echo -e "Default: ${CYAN}https://google.com${RESET}"
+    echo -n "URL: "
+    read -r user_url
+    [ -z "$user_url" ] && user_url="https://google.com"
+
+    case "$user_url" in
+        http://*|https://*|file://*|about:*|chrome:*) ;;
+        *) user_url="https://$user_url" ;;
+    esac
+
+    echo -e "\n${GREEN}Launching Chromium...${RESET}"
+    echo "Tip: Close the Chromium window or press Alt+F4 to return to BootOS."
+    sleep 1
+
+    if [ -x /usr/local/bin/browser ]; then
+        /usr/local/bin/browser "$user_url"
+    elif command -v browser >/dev/null 2>&1; then
+        browser "$user_url"
+    else
+        echo -e "${RED}Error: Browser launcher (/usr/local/bin/browser) not found!${RESET}"
+        read -r _
+    fi
+}
+
 # Main Loop
 while true; do
     show_banner
@@ -869,29 +906,31 @@ while true; do
     echo -e "  ${GREEN}[1]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
     echo -e "  ${GREEN}[2]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
     echo -e "  ${GREEN}[3]${RESET} Download & Boot Ubuntu 24.04 LTS"
-    echo -e "  ${GREEN}[4]${RESET} Download & Boot Custom Kernel/Initrd"
-    echo -e "  ${GREEN}[5]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
-    echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
-    echo -e "  ${GREEN}[7]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
-    echo -e "  ${GREEN}[8]${RESET} Open Root Terminal Shell"
-    echo -e "  ${GREEN}[9]${RESET} Reboot System"
-    echo -e "  ${GREEN}[10]${RESET} Power Off"
+    echo -e "  ${GREEN}[4]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
+    echo -e "  ${GREEN}[5]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
+    echo -e "  ${GREEN}[6]${RESET} Download & Boot Custom Kernel/Initrd"
+    echo -e "  ${GREEN}[7]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
+    echo -e "  ${GREEN}[8]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
+    echo -e "  ${GREEN}[9]${RESET} Open Root Terminal Shell"
+    echo -e "  ${GREEN}[10]${RESET} Reboot System"
+    echo -e "  ${GREEN}[11]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [1-10]: "
+    echo -n " Please select an option [1-11]: "
     read -r choice
 
     case "$choice" in
         1|"0"|"gh"|"github") github_release_os_installer ;;
         2) download_and_boot_lubuntu ;;
         3) download_and_boot_ubuntu ;;
-        4) custom_os_downloader ;;
-        5|"net"|"network") setup_network ;;
-        6) flash_drive_utility ;;
-        7) online_netboot_menu ;;
-        8)
+        4|"browser"|"chromium"|"web") launch_browser ;;
+        5) flash_drive_utility ;;
+        6) custom_os_downloader ;;
+        7|"net"|"network") setup_network ;;
+        8) online_netboot_menu ;;
+        9|"sh"|"shell"|"bash")
             echo -e "\n${CYAN}======================================================${RESET}"
             echo -e " ${BOLD}BootOS Root Terminal Shell${RESET}"
-            echo -e " Available tools: curl, wget, 7z, kexec, fdisk, parted, lsblk, ip"
+            echo -e " Available tools: chromium, browser, curl, wget, 7z, kexec, fdisk, parted, lsblk, ip"
             echo -e " Type 'exit' to return to the BootOS menu."
             echo -e "${CYAN}======================================================${RESET}\n"
             if command -v cttyhack >/dev/null 2>&1; then
@@ -902,11 +941,11 @@ while true; do
             echo -e "\nReturning to menu..."
             sleep 1
             ;;
-        9)
+        10)
             echo -e "\n${YELLOW}Rebooting...${RESET}"
             reboot
             ;;
-        10)
+        11)
             echo -e "\n${YELLOW}Shutting down...${RESET}"
             poweroff
             ;;
