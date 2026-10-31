@@ -12,7 +12,9 @@ RED="\033[1;31m"
 MAGENTA="\033[1;35m"
 RESET="\033[0m"
 
-clear
+[ -z "$TERM" ] || [ "$TERM" = "linux" ] && export TERM=vt100
+export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
+printf "\033[2J\033[1;1H"
 
 get_ram_info() {
     free -m | awk '/Mem:/ {printf "%d MB total, %d MB free", $2, $7}'
@@ -67,7 +69,7 @@ get_persist_info() {
 }
 
 show_banner() {
-    clear
+    printf "\033[2J\033[1;1H"
     echo -e "${CYAN}"
     echo "  ____              _    ___  ____  "
     echo " | __ )  ___   ___ | |_ / _ \/ ___| "

@@ -270,7 +270,15 @@ cp "${ROOTFS_DIR}/usr/local/bin/poweroff" "${ROOTFS_DIR}/usr/local/sbin/poweroff
 ln -sf /usr/local/bin/poweroff "${ROOTFS_DIR}/usr/local/bin/shutdown"
 ln -sf /usr/local/bin/poweroff "${ROOTFS_DIR}/usr/local/bin/halt"
 ln -sf /usr/local/sbin/poweroff "${ROOTFS_DIR}/usr/local/sbin/shutdown"
-ln -sf /usr/local/sbin/poweroff "${ROOTFS_DIR}/usr/local/sbin/halt" 
+ln -sf /usr/local/sbin/poweroff "${ROOTFS_DIR}/usr/local/sbin/halt"
+
+# Universal terminal screen clear (zero terminfo dependency)
+cat <<'EOF' > "${ROOTFS_DIR}/usr/local/bin/clear"
+#!/bin/sh
+printf "\033[2J\033[1;1H"
+EOF
+chmod +x "${ROOTFS_DIR}/usr/local/bin/clear"
+cp "${ROOTFS_DIR}/usr/local/bin/clear" "${ROOTFS_DIR}/usr/bin/clear" 2>/dev/null || true
 
 # 5. Create /init wrapper with hardware detection & module auto-loading
 echo "--> Packing complete OS into RAM-resident initramfs..."
@@ -397,7 +405,7 @@ echo 1 > /proc/sys/kernel/printk 2>/dev/null || true
 export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 export HOME=/root
-clear
+printf "\033[2J\033[1;1H"
 while true; do
     if [ -c /dev/tty1 ]; then
         setsid /bin/sh -c 'exec /usr/local/bin/bootos' <> /dev/tty1 >&0 2>&1
