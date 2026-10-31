@@ -380,31 +380,34 @@ echo "Initramfs created. Size: $(du -h "${ISO_ROOT}/boot/initramfs.gz" | cut -f1
 
 # 6. Configure ISOLINUX (Legacy BIOS for Old PCs)
 echo "--> Setting up ISOLINUX for Legacy BIOS boot..."
+mkdir -p "${ISO_ROOT}/isolinux" "${ISO_ROOT}/syslinux" "${ISO_ROOT}/boot/syslinux"
 cp /usr/lib/ISOLINUX/isolinux.bin "${ISO_ROOT}/isolinux/" 2>/dev/null || cp /usr/lib/syslinux/isolinux.bin "${ISO_ROOT}/isolinux/"
 cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "${ISO_ROOT}/isolinux/" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/bios/menu.c32 "${ISO_ROOT}/isolinux/" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/bios/libutil.c32 "${ISO_ROOT}/isolinux/" 2>/dev/null || true
 
 cat <<'EOF' > "${ISO_ROOT}/isolinux/isolinux.cfg"
-UI menu.c32
-PROMPT 0
-TIMEOUT 30
 DEFAULT bootos
+PROMPT 0
+TIMEOUT 20
 
+UI menu.c32
 MENU TITLE BootOS - 100% DRAM Resident
 
 LABEL bootos
   MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
-  LINUX /boot/vmlinuz
-  INITRD /boot/initramfs.gz
-  APPEND kexec_load_disabled=0 console=tty0 console=tty1 init=/init
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 console=tty1 init=/init
 
 LABEL bootos_quiet
   MENU LABEL ^2. Start BootOS (Quiet Mode)
-  LINUX /boot/vmlinuz
-  INITRD /boot/initramfs.gz
-  APPEND quiet kexec_load_disabled=0 console=tty0 console=tty1 init=/init
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initramfs.gz quiet kexec_load_disabled=0 console=tty0 console=tty1 init=/init
 EOF
+
+cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/isolinux/syslinux.cfg"
+cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/syslinux/syslinux.cfg"
+cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/boot/syslinux/syslinux.cfg"
 
 # 7. Configure GRUB (UEFI Boot)
 echo "--> Setting up GRUB for UEFI boot..."
