@@ -349,6 +349,18 @@ extract_iso_assets() {
     target_dir="$2"
     mkdir -p "$target_dir"
 
+    # Verify file exists and is larger than 10MB
+    if [ ! -s "$iso_file" ]; then
+        echo -e "${RED}Error: ISO file does not exist or is empty!${RESET}"
+        return 1
+    fi
+    iso_sz=$(wc -c < "$iso_file" 2>/dev/null || echo 0)
+    if [ "$iso_sz" -lt 10485760 ]; then
+        echo -e "${RED}Error: File '$iso_file' is only ${iso_sz} bytes (not a valid ISO disk image).${RESET}"
+        echo -e "${RED}The download likely failed or the server returned an HTTP 404 error webpage.${RESET}"
+        return 1
+    fi
+
     # Ensure kernel loop and fs modules are loaded
     modprobe loop 2>/dev/null || true
     modprobe isofs 2>/dev/null || true
@@ -501,7 +513,8 @@ github_release_os_installer() {
 
 download_and_boot_lubuntu() {
     show_banner
-    echo -e "${YELLOW}=== Download & Boot Lubuntu (Lightweight for Old PCs) ===${RESET}\n"
+    echo -e "${YELLOW}=== Download & Boot Lubuntu (Lightweight for Old PCs) ===${RESET}
+"
     if ! check_internet; then
         echo -e "${RED}Network is not ready! Setting up network first...${RESET}"
         setup_network
@@ -510,57 +523,75 @@ download_and_boot_lubuntu() {
     mkdir -p /tmp/target_os
     cd /tmp/target_os || exit 1
 
-    echo -e "${CYAN}Choose Lubuntu Boot Mode:${RESET}"
-    echo " 1) Fast Netboot (Downloads ~80MB kernel+initrd, installs over internet)"
-    echo " 2) Live ISO to RAM (Downloads full Live ISO into DRAM - needs >=4GB RAM)"
-    echo " 3) Back to Menu"
-    echo -n "Select [1-3]: "
+    echo -e "${CYAN}Choose Lubuntu Mode:${RESET}"
+    echo "  [1] Flash Live ISO directly to Hard Drive / SSD (Recommended for install)"
+    echo "  [2] Live ISO to RAM (Downloads full ~3.8 GB Live ISO into DRAM - needs >= 5 GB RAM)"
+    echo "  [3] Fast Minimal Netboot (~45 MB - installs over internet)"
+    echo "  [4] Back to Menu"
+    echo ""
+    echo -n "Select [1-4]: "
     read -r mode
 
     case "$mode" in
         1)
-            echo -e "${GREEN}Fetching Lubuntu/Ubuntu Netboot Assets...${RESET}"
-            VMLINUZ_URL="https://archive.ubuntu.com/ubuntu/dists/noble/main/installer-amd64/current/legacy-images/netboot/ubuntu-installer/amd64/linux"
-            INITRD_URL="https://archive.ubuntu.com/ubuntu/dists/noble/main/installer-amd64/current/legacy-images/netboot/ubuntu-installer/amd64/initrd.gz"
-            
-            echo "Downloading netboot kernel..."
-            wget -q --show-progress -O vmlinuz "$VMLINUZ_URL" || curl -L -o vmlinuz "$VMLINUZ_URL"
-            echo "Downloading netboot initrd..."
-            wget -q --show-progress -O initrd.gz "$INITRD_URL" || curl -L -o initrd.gz "$INITRD_URL"
-
-            if [ -s vmlinuz ] && [ -s initrd.gz ]; then
-                boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd.gz" "auto=true priority=critical"
-            else
-                echo -e "${RED}Download failed. Please check network connection.${RESET}"
-                read -r _
+            DEFAULT_LUBUNTU="https://cdimage.ubuntu.com/lubuntu/releases/noble/release/lubuntu-24.04.5-desktop-amd64.iso"
+            echo -e "\n${CYAN}Flash Lubuntu directly to storage drive:${RESET}"
+            if select_target_drive; then
+                flash_image_to_drive "$DEFAULT_LUBUNTU" "$SELECTED_DEV" "Lubuntu 24.04.5 LTS Desktop"
             fi
             ;;
         2)
-            echo -e "${YELLOW}Enter Lubuntu ISO direct download URL:${RESET}"
-            echo "Default: https://cdimage.ubuntu.com/lubuntu/releases/24.04/release/lubuntu-24.04-desktop-amd64.iso"
+            get_ram_info
+            if [ "$FREE_RAM" -lt 4500 ]; then
+                echo -e "${YELLOW}Warning: Lubuntu 24.04 Desktop ISO is ~3.8 GB. You have ${FREE_RAM} MB free RAM.${RESET}"
+                echo -e "Storing a 3.8 GB ISO in RAM might cause an Out-Of-Memory freeze on low-RAM systems."
+                echo -e "Consider using Option [1] (Flash directly to drive)."
+                echo -n "Proceed anyway? (y/N): "
+                read -r proceed
+                [ "$proceed" != "y" ] && [ "$proceed" != "Y" ] && return
+            fi
+
+            DEFAULT_LUBUNTU="https://cdimage.ubuntu.com/lubuntu/releases/noble/release/lubuntu-24.04.5-desktop-amd64.iso"
+            echo -e "\nEnter Lubuntu ISO direct download URL:"
+            echo -e "Default: ${CYAN}$DEFAULT_LUBUNTU${RESET}"
             echo -n "Press Enter to use default or paste custom URL: "
             read -r iso_url
-            [ -z "$iso_url" ] && iso_url="https://cdimage.ubuntu.com/lubuntu/releases/24.04/release/lubuntu-24.04-desktop-amd64.iso"
+            [ -z "$iso_url" ] && iso_url="$DEFAULT_LUBUNTU"
 
-            echo -e "${GREEN}Downloading ISO into RAM (/tmp/lubuntu.iso)...${RESET}"
-            wget -q --show-progress -O /tmp/lubuntu.iso "$iso_url" || curl -L -o /tmp/lubuntu.iso "$iso_url"
+            echo -e "\n${GREEN}Downloading Lubuntu ISO into RAM (/tmp/lubuntu.iso)...${RESET}"
+            rm -f /tmp/lubuntu.iso
+            curl -# -f -L -o /tmp/lubuntu.iso "$iso_url"
 
             if [ -s /tmp/lubuntu.iso ]; then
-                echo -e "${GREEN}Extracting kernel and initrd from ISO...${RESET}"
                 rm -rf /tmp/lubuntu_extracted
-                extract_iso_assets "/tmp/lubuntu.iso" "/tmp/lubuntu_extracted"
+                if extract_iso_assets "/tmp/lubuntu.iso" "/tmp/lubuntu_extracted"; then
+                    k_file=$(find /tmp/lubuntu_extracted -type f \( -iname "vmlinuz*" -o -iname "linux*" -o -iname "bzImage*" \) 2>/dev/null | head -n1)
+                    i_file=$(find /tmp/lubuntu_extracted -type f \( -iname "initrd*" -o -iname "initramfs*" \) 2>/dev/null | head -n1)
 
-                k_file=$(find /tmp/lubuntu_extracted -type f \( -name "vmlinuz*" -o -name "linux*" \) 2>/dev/null | head -n1)
-                i_file=$(find /tmp/lubuntu_extracted -type f \( -name "initrd*" -o -name "initramfs*" \) 2>/dev/null | head -n1)
-
-                if [ -n "$k_file" ]; then
-                    boot_kexec "$k_file" "$i_file" "boot=casper toram iso-scan/filename=/tmp/lubuntu.iso quiet splash"
-                else
-                    echo -e "${RED}Could not locate kernel inside Lubuntu ISO!${RESET}"
-                    read -r _
+                    if [ -n "$k_file" ]; then
+                        boot_kexec "$k_file" "$i_file" "boot=casper toram iso-scan/filename=/tmp/lubuntu.iso quiet splash"
+                    else
+                        echo -e "${RED}Could not locate kernel inside Lubuntu ISO!${RESET}"
+                        read -r _
+                    fi
                 fi
             else
-                echo -e "${RED}Download failed!${RESET}"
+                echo -e "${RED}Download failed or server returned an error!${RESET}"
+                read -r _
+            fi
+            ;;
+        3)
+            echo -e "${GREEN}Downloading Ubuntu/Lubuntu Minimal Netboot kernel & initrd (~45 MB)...${RESET}"
+            KERNEL_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
+            INITRD_URL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
+
+            curl -# -f -L -o /tmp/target_os/vmlinuz "$KERNEL_URL"
+            curl -# -f -L -o /tmp/target_os/initrd.gz "$INITRD_URL"
+
+            if [ -s /tmp/target_os/vmlinuz ] && [ -s /tmp/target_os/initrd.gz ]; then
+                boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd.gz" "console=tty1 root=/dev/ram0 rw"
+            else
+                echo -e "${RED}Download failed. Please check network connection.${RESET}"
                 read -r _
             fi
             ;;
@@ -572,7 +603,8 @@ download_and_boot_lubuntu() {
 
 download_and_boot_ubuntu() {
     show_banner
-    echo -e "${YELLOW}=== Download & Boot Ubuntu 24.04 LTS ===${RESET}\n"
+    echo -e "${YELLOW}=== Download & Boot Ubuntu 24.04 LTS ===${RESET}
+"
     if ! check_internet; then
         setup_network
     fi
@@ -580,41 +612,69 @@ download_and_boot_ubuntu() {
     mkdir -p /tmp/target_os
     cd /tmp/target_os || exit 1
 
-    echo -e "${CYAN}Select Ubuntu Flavor:${RESET}"
-    echo " 1) Ubuntu Server 24.04 (Netboot / Direct Boot)"
-    echo " 2) Ubuntu Desktop 24.04 Live"
-    echo " 3) Back"
-    echo -n "Choice: "
+    echo -e "${CYAN}Select Ubuntu Option:${RESET}"
+    echo "  [1] Flash Live Desktop ISO directly to Hard Drive / SSD (Recommended for install)"
+    echo "  [2] Live Desktop ISO to RAM (~5.8 GB ISO in DRAM - needs >= 7 GB RAM)"
+    echo "  [3] Ubuntu Noble Minimal Netboot (~45 MB - installs over internet)"
+    echo "  [4] Back"
+    echo ""
+    echo -n "Choice [1-4]: "
     read -r ub_choice
 
     case "$ub_choice" in
         1)
-            echo -e "${GREEN}Downloading Ubuntu Noble Netboot kernel & initrd...${RESET}"
-            KERNEL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
-            INITRD="https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-initrd-generic"
-            wget -q --show-progress -O vmlinuz "$KERNEL" || curl -L -o vmlinuz "$KERNEL"
-            wget -q --show-progress -O initrd "$INITRD" || curl -L -o initrd "$INITRD"
-            if [ -s vmlinuz ] && [ -s initrd ]; then
-                boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd" "console=tty1 root=/dev/ram0 rw"
+            DEFAULT_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
+            echo -e "\n${CYAN}Flash Ubuntu directly to storage drive:${RESET}"
+            if select_target_drive; then
+                flash_image_to_drive "$DEFAULT_URL" "$SELECTED_DEV" "Ubuntu 24.04.5.1 LTS Desktop"
             fi
             ;;
         2)
-            echo -e "${YELLOW}Enter Ubuntu Desktop ISO direct URL (or press Enter for default):${RESET}"
-            DEFAULT_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso"
-            echo -n "URL [$DEFAULT_URL]: "
+            get_ram_info
+            if [ "$FREE_RAM" -lt 6500 ]; then
+                echo -e "${YELLOW}Warning: Ubuntu Desktop ISO is ~5.8 GB. You have ${FREE_RAM} MB free RAM.${RESET}"
+                echo -e "Storing a 5.8 GB ISO in RAM might cause an Out-Of-Memory freeze on low-RAM systems."
+                echo -e "Consider using Option [1] (Flash directly to disk)."
+                echo -n "Proceed anyway? (y/N): "
+                read -r proceed
+                [ "$proceed" != "y" ] && [ "$proceed" != "Y" ] && return
+            fi
+
+            DEFAULT_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04.5.1-desktop-amd64.iso"
+            echo -e "\nEnter Ubuntu Desktop ISO direct URL (or press Enter for default):"
+            echo -e "Default: ${CYAN}$DEFAULT_URL${RESET}"
+            echo -n "URL: "
             read -r custom_url
             [ -z "$custom_url" ] && custom_url="$DEFAULT_URL"
 
-            wget -q --show-progress -O /tmp/ubuntu.iso "$custom_url" || curl -L -o /tmp/ubuntu.iso "$custom_url"
+            rm -f /tmp/ubuntu.iso
+            curl -# -f -L -o /tmp/ubuntu.iso "$custom_url"
             if [ -s /tmp/ubuntu.iso ]; then
                 rm -rf /tmp/ubuntu_extracted
-                extract_iso_assets "/tmp/ubuntu.iso" "/tmp/ubuntu_extracted"
-                k_file=$(find /tmp/ubuntu_extracted -type f \( -name "vmlinuz*" -o -name "linux*" \) 2>/dev/null | head -n1)
-                i_file=$(find /tmp/ubuntu_extracted -type f \( -name "initrd*" -o -name "initramfs*" \) 2>/dev/null | head -n1)
+                if extract_iso_assets "/tmp/ubuntu.iso" "/tmp/ubuntu_extracted"; then
+                    k_file=$(find /tmp/ubuntu_extracted -type f \( -iname "vmlinuz*" -o -iname "linux*" -o -iname "bzImage*" \) 2>/dev/null | head -n1)
+                    i_file=$(find /tmp/ubuntu_extracted -type f \( -iname "initrd*" -o -iname "initramfs*" \) 2>/dev/null | head -n1)
 
-                if [ -n "$k_file" ]; then
-                    boot_kexec "$k_file" "$i_file" "boot=casper toram iso-scan/filename=/tmp/ubuntu.iso quiet splash"
+                    if [ -n "$k_file" ]; then
+                        boot_kexec "$k_file" "$i_file" "boot=casper toram iso-scan/filename=/tmp/ubuntu.iso quiet splash"
+                    fi
                 fi
+            else
+                echo -e "${RED}Download failed or server returned an error!${RESET}"
+                read -r _
+            fi
+            ;;
+        3)
+            echo -e "${GREEN}Downloading Ubuntu Noble Netboot kernel & initrd (~45 MB)...${RESET}"
+            KERNEL="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
+            INITRD="https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
+            curl -# -f -L -o /tmp/target_os/vmlinuz "$KERNEL"
+            curl -# -f -L -o /tmp/target_os/initrd "$INITRD"
+            if [ -s /tmp/target_os/vmlinuz ] && [ -s /tmp/target_os/initrd ]; then
+                boot_kexec "/tmp/target_os/vmlinuz" "/tmp/target_os/initrd" "console=tty1 root=/dev/ram0 rw"
+            else
+                echo -e "${RED}Download failed!${RESET}"
+                read -r _
             fi
             ;;
         *)
@@ -693,8 +753,8 @@ online_netboot_menu() {
             ;;
         3)
             echo -e "\n${GREEN}Downloading Ubuntu 24.04 LTS Netboot Installer...${RESET}"
-            curl -L -o /tmp/netboot/vmlinuz "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
-            curl -L -o /tmp/netboot/initrd.gz "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-initrd-generic"
+            curl -L -o /tmp/netboot/vmlinuz "https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-vmlinuz-generic"
+            curl -L -o /tmp/netboot/initrd.gz "https://cloud-images.ubuntu.com/releases/noble/release/unpacked/ubuntu-24.04-server-cloudimg-amd64-initrd-generic"
             if [ -s /tmp/netboot/vmlinuz ] && [ -s /tmp/netboot/initrd.gz ]; then
                 boot_kexec "/tmp/netboot/vmlinuz" "/tmp/netboot/initrd.gz" "console=tty1 root=/dev/ram0 rw"
             else
