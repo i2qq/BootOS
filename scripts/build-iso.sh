@@ -394,6 +394,10 @@ while true; do
     sleep 2
 done
 EOF
+# Sanitize all scripts to pure Unix LF line endings
+find "${ROOTFS_DIR}/usr/local/bin" "${ROOTFS_DIR}/usr/local/sbin" "${ROOTFS_DIR}/etc" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+sed -i 's/\r$//' "${ROOTFS_DIR}/init" 2>/dev/null || true
+chmod +x "${ROOTFS_DIR}/usr/local/bin/"* 2>/dev/null || true
 chmod +x "${ROOTFS_DIR}/init"
 
 # Run depmod inside rootfs before packing
