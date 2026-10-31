@@ -285,32 +285,30 @@ echo "--> Packing complete OS into RAM-resident initramfs..."
 cat <<'EOF' > "${ROOTFS_DIR}/init"
 #!/bin/sh
 trap 'sync; echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; busybox reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger' TERM INT QUIT
+
+echo "--> [1/4] BootOS: Mounting kernel filesystems..."
 mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev
 mount -t tmpfs none /tmp
 mount -t tmpfs none /run
 
-# Enable kexec in Alpine kernel (if not already enabled by bootloader)
+# Enable kexec in Alpine kernel
 echo 0 > /proc/sys/kernel/kexec_load_disabled 2>/dev/null || true
 
-# 1. Generate module dependencies
-KERNEL_VER=$(uname -r)
-depmod -a "$KERNEL_VER" 2>/dev/null || true
-
-# 2. Start eudev daemon for dynamic device detection, hotplug, and Xorg input
+echo "--> [2/4] BootOS: Initializing hardware & network..."
+# Start eudev daemon for dynamic device detection and hotplug
 mkdir -p /run/udev
 if command -v udevd >/dev/null 2>&1; then
     udevd --daemon 2>/dev/null || true
     udevadm trigger --action=add 2>/dev/null || true
-    udevadm settle --timeout=5 2>/dev/null || true
 else
     echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
     mdev -s 2>/dev/null || true
 fi
 
-# 3. Explicitly probe core storage, loop & filesystem modules
-for mod in loop isofs squashfs overlay ext4 vfat fat nls_cp437 nls_iso8859_1 nls_utf8; do
+# Explicitly probe essential kernel modules
+for mod in loop isofs squashfs overlay ext4 vfat fat psmouse evdev usbhid hid_generic e1000 e1000e igb igc r8169 r8152 cdc_ether drm bochs_drm; do
     modprobe $mod 2>/dev/null || true
 done
 
@@ -320,15 +318,26 @@ for i in 0 1 2 3 4 5 6 7; do
     [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i" 2>/dev/null || true
 done
 
-# 3b. Probe for and restore BootOS persistent storage if available
-echo "Scanning storage devices for BootOS persistent state..."
+mkdir -p /tmp/.X11-unix /var/log /run/user/0 /etc/X11/xorg.conf.d
+chmod 1777 /tmp/.X11-unix
+
+# Bring up loopback & DNS
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+
+# Background network auto-configuration
+for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
+    ip link set "$iface" up 2>/dev/null
+    udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
+done
+
+echo "--> [3/4] BootOS: Checking persistent storage..."
 PERSIST_DEV=""
-for part in $(ls /dev/sd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/vd[a-z][0-9]* /dev/xvd[a-z][0-9]* 2>/dev/null); do
+for part in $(ls /dev/sd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/vd[a-z][0-9]* 2>/dev/null); do
     [ -b "$part" ] || continue
     mkdir -p /mnt/p_check
-    if mount -o ro "$part" /mnt/p_check 2>/dev/null || \
-       mount -t ext4 -o ro "$part" /mnt/p_check 2>/dev/null || \
-       mount -t vfat -o ro "$part" /mnt/p_check 2>/dev/null; then
+    if mount -o ro "$part" /mnt/p_check 2>/dev/null; then
         pfile=""
         if [ -f "/mnt/p_check/bootos-persist.tgz" ]; then
             pfile="/mnt/p_check/bootos-persist.tgz"
@@ -337,7 +346,7 @@ for part in $(ls /dev/sd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/vd[a-z][0
         fi
 
         if [ -n "$pfile" ]; then
-            echo "--> Restoring persistent configuration from $part into DRAM..."
+            echo "--> Restoring persistent configuration from $part..."
             tar -xzf "$pfile" -C / 2>/dev/null || true
             mkdir -p /etc
             echo "$part" > /etc/bootos_persist_dev
@@ -350,70 +359,23 @@ for part in $(ls /dev/sd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/vd[a-z][0
     fi
     rm -rf /mnt/p_check
 done
-if [ -n "$PERSIST_DEV" ]; then
-    echo "✓ Persistent data restored from $PERSIST_DEV"
-fi
 
-# 4a. Explicitly probe mouse, keyboard, and input devices (PS/2, USB, VirtualBox, VMware)
-for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse joydev; do
-    modprobe $mod 2>/dev/null || true
-done
-
-# 4b. Explicitly probe physical & virtual network drivers
-for mod in e1000 e1000e igb igc virtio_net vmxnet3 r8169 r8152 cdc_ether ax88179_178a asix pcnet32 tg3 b44 forcedeth 8139too 8139cp atlantic sky2 alx hv_netvsc iwlwifi iwlmvm mt7921e mt7921u rtw88_8821ce rtw88_8822ce rtw89_8852ae rtw89_8852be; do
-    modprobe $mod 2>/dev/null || true
-done
-
-# 4c. Explicitly probe graphics and display modules (VBox, Intel, AMD, generic DRM)
-for mod in vboxvideo drm drm_kms_helper bochs_drm virtio_gpu fb_sys_fops syscopyarea sysfillrect sysimgblt; do
-    modprobe $mod 2>/dev/null || true
-done
-
-mkdir -p /tmp/.X11-unix /var/log /run/user/0 /etc/X11/xorg.conf.d
-chmod 1777 /tmp/.X11-unix
-
-# 5. Probe PCI modaliases for any additional hardware
-find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
-
-# 6. Bring up loopback
-ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null
-
-# 7. Default DNS
-echo "nameserver 1.1.1.1" > /etc/resolv.conf
-echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-
-# 8. Auto-configure network interfaces via DHCP
-for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
-    ip link set "$iface" up 2>/dev/null
-done
-# Settle carrier and acquire DHCP
-for i in 1 2; do
-    for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
-        c=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo 0)
-        if [ "$c" = "1" ]; then
-            udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
-            break 2
-        fi
-    done
-    sleep 1
-done
-
-# Silence kernel dmesg spam onto console
-echo 1 > /proc/sys/kernel/printk 2>/dev/null || true
-
-# Start BootOS with persistent loop & TTY
+echo "--> [4/4] BootOS: Starting user interface..."
 export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 export HOME=/root
-printf "\033[2J\033[1;1H"
+
+# Switch monitor to TTY1 and attach terminal
+chvt 1 2>/dev/null || true
 while true; do
-    if [ -c /dev/tty1 ]; then
-        setsid /bin/sh -c 'exec /usr/local/bin/bootos' <> /dev/tty1 >&0 2>&1
+    if [ -c /dev/tty0 ]; then
+        /usr/local/bin/bootos < /dev/tty0 > /dev/tty0 2>&1
+    elif [ -c /dev/tty1 ]; then
+        /usr/local/bin/bootos < /dev/tty1 > /dev/tty1 2>&1
     else
-        setsid /bin/sh -c 'exec /usr/local/bin/bootos' <> /dev/console >&0 2>&1
+        /usr/local/bin/bootos < /dev/console > /dev/console 2>&1
     fi
-    echo "BootOS finished. Restarting in 2 seconds..."
-    sleep 2
+    sleep 1
 done
 EOF
 # Sanitize all scripts to pure Unix LF line endings
