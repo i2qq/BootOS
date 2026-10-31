@@ -581,6 +581,64 @@ custom_os_downloader() {
     fi
 }
 
+online_netboot_menu() {
+    show_banner
+    echo -e "${YELLOW}=== Online OS Netboot Installers (Direct DRAM Boot) ===${RESET}\n"
+    if ! check_internet; then
+        echo -e "${RED}Network is not ready! Setting up network first...${RESET}"
+        setup_network
+    fi
+
+    echo -e "Select an official online netboot installer to boot directly in RAM:"
+    echo -e "  ${GREEN}[1]${RESET} Debian 12 (Bookworm) Netboot Installer (~40 MB - Fast)"
+    echo -e "  ${GREEN}[2]${RESET} Alpine Linux Live Netboot (~15 MB - Ultra-lightweight)"
+    echo -e "  ${GREEN}[3]${RESET} Ubuntu 24.04 LTS Minimal Netboot (~65 MB)"
+    echo -e "  ${GREEN}[4]${RESET} Back to Menu"
+    echo ""
+    echo -n "Select option [1-4]: "
+    read -r nb_choice
+
+    mkdir -p /tmp/netboot
+    case "$nb_choice" in
+        1)
+            echo -e "\n${GREEN}Downloading Debian 12 Bookworm Netboot Installer...${RESET}"
+            curl -L -o /tmp/netboot/vmlinuz "http://ftp.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/linux"
+            curl -L -o /tmp/netboot/initrd.gz "http://ftp.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/initrd.gz"
+            if [ -s /tmp/netboot/vmlinuz ] && [ -s /tmp/netboot/initrd.gz ]; then
+                boot_kexec "/tmp/netboot/vmlinuz" "/tmp/netboot/initrd.gz" "priority=low console=tty1"
+            else
+                echo -e "${RED}Download failed!${RESET}"
+                read -r _
+            fi
+            ;;
+        2)
+            echo -e "\n${GREEN}Downloading Alpine Linux Netboot Assets...${RESET}"
+            curl -L -o /tmp/netboot/vmlinuz "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/vmlinuz-lts"
+            curl -L -o /tmp/netboot/initrd.gz "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/netboot/initramfs-lts"
+            if [ -s /tmp/netboot/vmlinuz ] && [ -s /tmp/netboot/initrd.gz ]; then
+                boot_kexec "/tmp/netboot/vmlinuz" "/tmp/netboot/initrd.gz" "alpine_repo=https://dl-cdn.alpinelinux.org/alpine/v3.20/main modules=loop,squashfs console=tty1"
+            else
+                echo -e "${RED}Download failed!${RESET}"
+                read -r _
+            fi
+            ;;
+        3)
+            echo -e "\n${GREEN}Downloading Ubuntu 24.04 LTS Netboot Installer...${RESET}"
+            curl -L -o /tmp/netboot/vmlinuz "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
+            curl -L -o /tmp/netboot/initrd.gz "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-initrd-generic"
+            if [ -s /tmp/netboot/vmlinuz ] && [ -s /tmp/netboot/initrd.gz ]; then
+                boot_kexec "/tmp/netboot/vmlinuz" "/tmp/netboot/initrd.gz" "console=tty1 root=/dev/ram0 rw"
+            else
+                echo -e "${RED}Download failed!${RESET}"
+                read -r _
+            fi
+            ;;
+        *)
+            return
+            ;;
+    esac
+}
+
 flash_drive_utility() {
     show_banner
     echo -e "${YELLOW}=== Flash Downloaded OS ISO to Internal Drive / SSD ===${RESET}\n"
@@ -630,7 +688,7 @@ while true; do
     echo -e "  ${GREEN}[4]${RESET} Download & Boot Custom Kernel/Initrd"
     echo -e "  ${GREEN}[5]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
     echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
-    echo -e "  ${GREEN}[7]${RESET} Launch iPXE / Netboot.xyz (Hundreds of OSs on-demand)"
+    echo -e "  ${GREEN}[7]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
     echo -e "  ${GREEN}[8]${RESET} Open Root Terminal Shell"
     echo -e "  ${GREEN}[9]${RESET} Reboot System"
     echo -e "  ${GREEN}[10]${RESET} Power Off"
@@ -645,29 +703,7 @@ while true; do
         4) custom_os_downloader ;;
         5|"net"|"network") setup_network ;;
         6) flash_drive_utility ;;
-        7)
-            echo -e "\n${GREEN}Preparing Netboot.xyz...${RESET}"
-            mkdir -p /tmp/netboot
-            if [ -d /sys/firmware/efi ]; then
-                echo -e "${CYAN}Detected UEFI mode. Downloading netboot.xyz.efi...${RESET}"
-                curl -sSL -o /tmp/netboot/netboot.xyz.efi https://boot.netboot.xyz/ipxe/netboot.xyz.efi
-                kexec -s -l /tmp/netboot/netboot.xyz.efi 2>/dev/null || kexec -l /tmp/netboot/netboot.xyz.efi 2>/dev/null
-            else
-                echo -e "${CYAN}Detected Legacy BIOS mode. Downloading netboot.xyz.lkrn...${RESET}"
-                curl -sSL -o /tmp/netboot/netboot.xyz.lkrn https://boot.netboot.xyz/ipxe/netboot.xyz.lkrn
-                kexec -l /tmp/netboot/netboot.xyz.lkrn 2>/dev/null
-            fi
-
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}Launching Netboot.xyz!${RESET}"
-                sleep 1
-                kexec -e
-            else
-                echo -e "${RED}Failed to load Netboot.xyz into kexec!${RESET}"
-                echo "Press Enter to return..."
-                read -r _
-            fi
-            ;;
+        7) online_netboot_menu ;;
         8)
             echo -e "\n${CYAN}======================================================${RESET}"
             echo -e " ${BOLD}BootOS Root Terminal Shell${RESET}"
