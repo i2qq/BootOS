@@ -10,6 +10,7 @@
 # ==============================================================================
 
 TARGET_URL="${1:-https://google.com}"
+TARGET_MODE="${2:-browser}"
 
 # Ensure URL has protocol scheme
 case "$TARGET_URL" in
@@ -147,8 +148,9 @@ cat <<'EOF' > /root/.config/openbox/rc.xml
 </openbox_config>
 EOF
 
-# 7. Write target URL for session
+# 7. Write target URL and mode for session
 echo "$TARGET_URL" > /tmp/chromium_target_url
+echo "$TARGET_MODE" > /tmp/chromium_target_mode
 
 # 8. Generate .xinitrc session script (quoted heredoc to preserve variables)
 cat <<'EOF' > /root/.xinitrc
@@ -199,9 +201,19 @@ openbox &
     done
 ) &
 
-# Read target URL
+# Read target URL and mode
 URL="https://google.com"
 [ -f /tmp/chromium_target_url ] && URL=$(cat /tmp/chromium_target_url)
+
+MODE="browser"
+[ -f /tmp/chromium_target_mode ] && MODE=$(cat /tmp/chromium_target_mode)
+
+EXTRA_FLAGS=""
+if [ "$MODE" = "app" ]; then
+    EXTRA_FLAGS="--app=$URL --window-size=1180,760"
+else
+    EXTRA_FLAGS="--start-maximized $URL"
+fi
 
 # Launch Chromium with robust hardware & container compatibility flags
 exec dbus-run-session -- chromium \
@@ -213,9 +225,8 @@ exec dbus-run-session -- chromium \
     --no-first-run \
     --no-default-browser-check \
     --password-store=basic \
-    --start-maximized \
     --enable-features=OverlayScrollbar \
-    "$URL"
+    $EXTRA_FLAGS
 EOF
 
 echo "Starting graphical display and Chromium browser..."

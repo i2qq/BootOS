@@ -54,7 +54,7 @@ get_persist_info() {
             return
         fi
     fi
-    echo -e "${YELLOW}Ephemeral DRAM (Run Option 10 to save)${RESET}"
+    echo -e "${YELLOW}Ephemeral DRAM (Run Option 11 to save)${RESET}"
 }
 
 show_banner() {
@@ -929,8 +929,8 @@ Enter GitHub repository or release URL (e.g. ${CYAN}i2qq/BootOS${RESET}):"
 
 launch_file_explorer() {
     show_banner
-    echo -e "${YELLOW}=== Launch Windows 11 File Explorer (GUI) ===${RESET}\n"
-    echo -e "${GREEN}Starting BootOS File Explorer (Windows 11 Fluent UI)...${RESET}"
+    echo -e "${YELLOW}=== Launch BootOS File Explorer (GUI) ===${RESET}\n"
+    echo -e "${GREEN}Starting BootOS File Explorer...${RESET}"
     echo "Tip: Fully functional tabs, breadcrumb address bar, drive meters, and real file operations."
     echo "Click Close ([X]) or press Alt+F4 to return to BootOS."
     sleep 1
@@ -940,7 +940,7 @@ launch_file_explorer() {
     elif [ -f /usr/local/share/bootos-explorer/server.py ]; then
         python3 /usr/local/share/bootos-explorer/server.py >/dev/null 2>&1 &
         sleep 1
-        browser "http://127.0.0.1:54321/"
+        browser "http://127.0.0.1:54321/" "app"
     else
         echo -e "${RED}File Explorer files not found!${RESET}"
         sleep 2
@@ -1160,7 +1160,7 @@ while true; do
     show_banner
     echo -e " ${BOLD}Main Menu:${RESET}"
     echo -e "  ${GREEN}[1]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
-    echo -e "  ${GREEN}[2]${RESET} ${BOLD}Launch Windows 11 File Explorer (GUI)${RESET}"
+    echo -e "  ${GREEN}[2]${RESET} ${BOLD}Launch BootOS File Explorer (GUI)${RESET}"
     echo -e "  ${GREEN}[3]${RESET} Download & Boot Lubuntu (Fast / Best for Old PCs)"
     echo -e "  ${GREEN}[4]${RESET} Download & Boot Ubuntu 24.04 LTS"
     echo -e "  ${GREEN}[5]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
