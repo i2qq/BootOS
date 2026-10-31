@@ -132,6 +132,217 @@ boot_kexec() {
     fi
 }
 
+# Helper to select a storage disk device
+select_target_drive() {
+    SELECTED_DEV=""
+    echo -e "\n${CYAN}Detected Storage Drives:${RESET}"
+    drives_file="/tmp/detected_drives.txt"
+    rm -f "$drives_file"
+
+    # List disks excluding cd-rom (sr*) and loop devices
+    lsblk -d -n -p -o NAME,SIZE,MODEL,TYPE 2>/dev/null | grep -E "disk" | awk '{print $1 "|" $2 " " $3 " " $4}' > "$drives_file" 2>/dev/null || true
+
+    if [ ! -s "$drives_file" ]; then
+        for d in /sys/block/sd* /sys/block/nvme* /sys/block/vd*; do
+            [ -e "$d" ] || continue
+            dev_name="/dev/$(basename "$d")"
+            if [ -b "$dev_name" ]; then
+                s=$(cat "$d/size" 2>/dev/null || echo 0)
+                sz_mb=$((s / 2048))
+                echo "$dev_name|${sz_mb}MB disk" >> "$drives_file"
+            fi
+        done
+    fi
+
+    if [ ! -s "$drives_file" ]; then
+        echo -e "${RED}No writable disk drives (HDD/SSD) detected!${RESET}"
+        return 1
+    fi
+
+    d_count=$(wc -l < "$drives_file")
+    d_idx=1
+    while IFS='|' read -r dev info; do
+        echo -e "  [${GREEN}$d_idx${RESET}] ${BOLD}$dev${RESET} ($info)"
+        d_idx=$((d_idx + 1))
+    done < "$drives_file"
+
+    echo ""
+    echo -n "Select drive [1-$d_count] or type device path: "
+    read -r user_dev_input
+    [ -z "$user_dev_input" ] && user_dev_input="1"
+
+    if echo "$user_dev_input" | grep -qE '^[0-9]+$'; then
+        SELECTED_DEV=$(sed -n "${user_dev_input}p" "$drives_file" | cut -d'|' -f1)
+    else
+        SELECTED_DEV="$user_dev_input"
+    fi
+
+    if [ ! -b "$SELECTED_DEV" ]; then
+        echo -e "${RED}Error: '$SELECTED_DEV' is not a valid block device!${RESET}"
+        return 1
+    fi
+    return 0
+}
+
+# Helper to flash an image (file or URL) to a target block device
+flash_image_to_drive() {
+    src="$1"
+    target="$2"
+    img_name="$3"
+
+    echo -e "\n${RED}${BOLD}======================================================${RESET}"
+    echo -e "${RED}${BOLD}  WARNING: ALL DATA ON $target WILL BE PERMANENTLY ERASED!${RESET}"
+    echo -e "${RED}${BOLD}======================================================${RESET}"
+    echo -e "Image Source: ${BOLD}${img_name:-$src}${RESET}"
+    echo -e "Target Drive: ${BOLD}${target}${RESET}\n"
+    echo -n "Type 'YES' in capital letters to proceed: "
+    read -r confirm
+    if [ "$confirm" != "YES" ]; then
+        echo -e "${YELLOW}Flashing canceled.${RESET}"
+        read -r _
+        return 1
+    fi
+
+    echo -e "\n${GREEN}Writing $img_name to $target...${RESET}"
+    if [ -f "$src" ]; then
+        dd if="$src" of="$target" bs=4M conv=fsync
+    else
+        # URL source: verify final destination is not an HTML webpage
+        if ! echo "$src" | grep -qE '(\.iso|\.img|\.raw|/releases/download/)'; then
+            header_sample=$(curl -sIL "$src" 2>/dev/null | grep -i "^content-type:" | tail -n1)
+            if echo "$header_sample" | grep -iq "text/html"; then
+                echo -e "${RED}Error: The provided URL returned an HTML page instead of an ISO/IMG disk image!${RESET}"
+                read -r _
+                return 1
+            fi
+        fi
+        curl -# -L "$src" | dd of="$target" bs=4M conv=fsync
+    fi
+
+    sync
+    echo -e "\n${GREEN}✓ Flashing complete!${RESET}"
+    echo -e "You can now reboot your PC and it will boot into the new OS from $target."
+    echo "Press Enter to return..."
+    read -r _
+    return 0
+}
+
+# Helper to query and list GitHub release assets
+resolve_github_release_assets() {
+    raw_repo="$1"
+    clean_input=$(echo "$raw_repo" | sed -e 's|^https://github.com/||' -e 's|^http://github.com/||' -e 's|\.git$||' -e 's|/$||')
+    owner=$(echo "$clean_input" | awk -F'/' '{print $1}')
+    repo=$(echo "$clean_input" | awk -F'/' '{print $2}')
+    tag=""
+
+    if echo "$clean_input" | grep -q '/releases/tag/'; then
+        tag=$(echo "$clean_input" | sed -e 's|.*/releases/tag/||')
+    fi
+
+    if [ -z "$owner" ] || [ -z "$repo" ]; then
+        echo -e "${RED}Invalid repository format! Expected 'owner/repo' or GitHub URL.${RESET}"
+        return 1
+    fi
+
+    echo -e "\n${CYAN}Querying GitHub API for ${owner}/${repo}...${RESET}"
+    auth_header=""
+    [ -n "$GITHUB_TOKEN" ] && auth_header="Authorization: token $GITHUB_TOKEN"
+
+    api_url="https://api.github.com/repos/${owner}/${repo}/releases/latest"
+    [ -n "$tag" ] && api_url="https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}"
+
+    release_json="/tmp/gh_release.json"
+    if [ -n "$auth_header" ]; then
+        curl -sSL -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
+    else
+        curl -sSL -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
+    fi
+
+    if grep -q '"message": "Not Found"' "$release_json" && [ -z "$tag" ]; then
+        echo "Latest release not found, checking all releases..."
+        curl -sSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${owner}/${repo}/releases" -o "/tmp/gh_releases_all.json"
+        if [ -s "/tmp/gh_releases_all.json" ]; then
+            if command -v jq >/dev/null 2>&1; then
+                jq '.[0]' /tmp/gh_releases_all.json > "$release_json" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    rel_name=""
+    rel_tag=""
+    if command -v jq >/dev/null 2>&1; then
+        rel_name=$(jq -r '.name // empty' "$release_json" 2>/dev/null)
+        rel_tag=$(jq -r '.tag_name // empty' "$release_json" 2>/dev/null)
+    fi
+    [ -z "$rel_tag" ] && rel_tag=$(grep -o '"tag_name": *"[^"]*"' "$release_json" | head -n1 | cut -d'"' -f4)
+    [ -z "$rel_name" ] && rel_name="$rel_tag"
+
+    if [ -z "$rel_tag" ]; then
+        echo -e "${RED}Could not find any release in https://github.com/${owner}/${repo}${RESET}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ Found Release:${RESET} ${BOLD}${rel_name}${RESET} (${rel_tag})"
+
+    asset_list="/tmp/gh_assets.txt"
+    rm -f "$asset_list"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.assets[] | select(.name | test("\\.(iso|img|raw)$"; "i")) | "\(.name)|\(.size)|\(.browser_download_url)"' "$release_json" > "$asset_list" 2>/dev/null || true
+    fi
+
+    if [ ! -s "$asset_list" ]; then
+        awk '
+            /"name":/ { gsub(/[",]/,"",$2); name=$2 }
+            /"size":/ { gsub(/[",]/,"",$2); size=$2 }
+            /"browser_download_url":/ {
+                gsub(/[",]/,"",$2); url=$2;
+                if (name ~ /\.(iso|img|raw)$/i) {
+                    print name "|" size "|" url;
+                }
+            }
+        ' "$release_json" > "$asset_list"
+    fi
+
+    # Fallback to all assets if none match iso/img
+    if [ ! -s "$asset_list" ]; then
+        if command -v jq >/dev/null 2>&1; then
+            jq -r '.assets[] | "\(.name)|\(.size)|\(.browser_download_url)"' "$release_json" > "$asset_list" 2>/dev/null || true
+        fi
+    fi
+
+    count=$(wc -l < "$asset_list")
+    if [ "$count" -eq 0 ]; then
+        echo -e "${RED}No downloadable OS images found in release '${rel_tag}'!${RESET}"
+        return 1
+    fi
+
+    echo -e "\n${CYAN}Available OS Images in this Release:${RESET}"
+    i=1
+    while IFS='|' read -r aname asize aurl; do
+        size_mb=$((asize / 1024 / 1024))
+        echo -e "  [${GREEN}$i${RESET}] $aname (${YELLOW}${size_mb} MB${RESET})"
+        i=$((i + 1))
+    done < "$asset_list"
+
+    selected_idx=1
+    if [ "$count" -gt 1 ]; then
+        echo -n "Select image [1-$count]: "
+        read -r selected_idx
+    fi
+
+    selected_line=$(sed -n "${selected_idx}p" "$asset_list")
+    if [ -z "$selected_line" ]; then
+        echo -e "${RED}Invalid selection!${RESET}"
+        return 1
+    fi
+
+    GH_SELECTED_NAME=$(echo "$selected_line" | cut -d'|' -f1)
+    GH_SELECTED_SIZE=$(echo "$selected_line" | cut -d'|' -f2)
+    GH_SELECTED_URL=$(echo "$selected_line" | cut -d'|' -f3)
+    return 0
+}
+
 # Extract kernel and initrd from ISO using 7z or loop mount
 extract_iso_assets() {
     iso_file="$1"
@@ -150,7 +361,7 @@ extract_iso_assets() {
     fi
 
     # Method 2: Fallback to loop mount if 7z extracted nothing
-    k_check=$(find "$target_dir" -type f \( -name "vmlinuz*" -o -name "linux*" -o -name "bzImage*" \) 2>/dev/null | head -n1)
+    k_check=$(find "$target_dir" -type f \( -iname "vmlinuz*" -o -iname "linux*" -o -iname "bzImage*" \) 2>/dev/null | head -n1)
     if [ -z "$k_check" ]; then
         echo -e "${CYAN}Trying loop mount for $iso_file...${RESET}"
         mount_dir="/tmp/loop_mnt_$$"
@@ -194,138 +405,19 @@ github_release_os_installer() {
         return
     fi
 
-    clean_input=$(echo "$raw_repo" | sed -e 's|^https://github.com/||' -e 's|^http://github.com/||' -e 's|\.git$||' -e 's|/$||')
-    owner=$(echo "$clean_input" | awk -F'/' '{print $1}')
-    repo=$(echo "$clean_input" | awk -F'/' '{print $2}')
-    tag=""
-
-    if echo "$clean_input" | grep -q '/releases/tag/'; then
-        tag=$(echo "$clean_input" | sed -e 's|.*/releases/tag/||')
-    fi
-
-    if [ -z "$owner" ] || [ -z "$repo" ]; then
-        echo -e "${RED}Invalid repository format! Expected 'owner/repo' or GitHub URL.${RESET}"
+    if ! resolve_github_release_assets "$raw_repo"; then
         echo "Press Enter to return..."
         read -r _
         return
     fi
 
-    echo -e "\n${CYAN}Querying GitHub API for ${owner}/${repo}...${RESET}"
-    
-    auth_header=""
-    if [ -n "$GITHUB_TOKEN" ]; then
-        auth_header="Authorization: token $GITHUB_TOKEN"
-    fi
-
-    api_url="https://api.github.com/repos/${owner}/${repo}/releases/latest"
-    if [ -n "$tag" ]; then
-        api_url="https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}"
-    fi
-
-    release_json="/tmp/gh_release.json"
-    if [ -n "$auth_header" ]; then
-        curl -sSL -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
-    else
-        curl -sSL -H "Accept: application/vnd.github.v3+json" "$api_url" -o "$release_json"
-    fi
-
-    if grep -q '"message": "Not Found"' "$release_json" && [ -z "$tag" ]; then
-        echo "Latest release not found, checking all releases..."
-        curl -sSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${owner}/${repo}/releases" -o "/tmp/gh_releases_all.json"
-        if [ -s "/tmp/gh_releases_all.json" ]; then
-            if command -v jq >/dev/null 2>&1; then
-                jq '.[0]' /tmp/gh_releases_all.json > "$release_json" 2>/dev/null || true
-            fi
-        fi
-    fi
-
-    rel_name=""
-    rel_tag=""
-    if command -v jq >/dev/null 2>&1; then
-        rel_name=$(jq -r '.name // empty' "$release_json" 2>/dev/null)
-        rel_tag=$(jq -r '.tag_name // empty' "$release_json" 2>/dev/null)
-    fi
-
-    if [ -z "$rel_tag" ]; then
-        rel_tag=$(grep -o '"tag_name": *"[^"]*"' "$release_json" | head -n1 | cut -d'"' -f4)
-    fi
-    if [ -z "$rel_name" ]; then
-        rel_name="$rel_tag"
-    fi
-
-    if [ -z "$rel_tag" ]; then
-        echo -e "${RED}Could not find any release in https://github.com/${owner}/${repo}${RESET}"
-        head -n 5 "$release_json"
-        echo "Press Enter to return..."
-        read -r _
-        return
-    fi
-
-    echo -e "${GREEN}✓ Found Release:${RESET} ${BOLD}${rel_name}${RESET} (${rel_tag})"
-
-    asset_list="/tmp/gh_assets.txt"
-    rm -f "$asset_list"
-
-    if command -v jq >/dev/null 2>&1; then
-        jq -r '.assets[] | select(.name | test("\\.(iso|img|raw)$"; "i")) | "\(.name)|\(.size)|\(.browser_download_url)"' "$release_json" > "$asset_list" 2>/dev/null || true
-    fi
-
-    if [ ! -s "$asset_list" ]; then
-        awk '
-            /"name":/ { gsub(/[",]/,"",$2); name=$2 }
-            /"size":/ { gsub(/[",]/,"",$2); size=$2 }
-            /"browser_download_url":/ {
-                gsub(/[",]/,"",$2); url=$2;
-                if (name ~ /\.(iso|img|raw)$/i) {
-                    print name "|" size "|" url;
-                }
-            }
-        ' "$release_json" > "$asset_list"
-    fi
-
-    count=$(wc -l < "$asset_list")
-
-    if [ "$count" -eq 0 ]; then
-        echo -e "${RED}No .iso or .img files found in release '${rel_tag}'!${RESET}"
-        echo -e "Available assets in release:"
-        if command -v jq >/dev/null 2>&1; then
-            jq -r '.assets[].name' "$release_json"
-        else
-            grep -o '"name": *"[^"]*"' "$release_json" | cut -d'"' -f4
-        fi
-        echo -e "\nPress Enter to return..."
-        read -r _
-        return
-    fi
-
-    echo -e "\n${CYAN}Available OS Images in this Release:${RESET}"
-    i=1
-    while IFS='|' read -r aname asize aurl; do
-        size_mb=$((asize / 1024 / 1024))
-        echo -e "  [${GREEN}$i${RESET}] $aname (${YELLOW}${size_mb} MB${RESET})"
-        i=$((i + 1))
-    done < "$asset_list"
-
-    selected_idx=1
-    if [ "$count" -gt 1 ]; then
-        echo -n "Select image [1-$count]: "
-        read -r selected_idx
-    fi
-
-    selected_line=$(sed -n "${selected_idx}p" "$asset_list")
-    if [ -z "$selected_line" ]; then
-        echo -e "${RED}Invalid selection!${RESET}"
-        read -r _
-        return
-    fi
-
-    selected_name=$(echo "$selected_line" | cut -d'|' -f1)
-    selected_size=$(echo "$selected_line" | cut -d'|' -f2)
-    selected_url=$(echo "$selected_line" | cut -d'|' -f3)
+    selected_name="$GH_SELECTED_NAME"
+    selected_size="$GH_SELECTED_SIZE"
+    selected_url="$GH_SELECTED_URL"
 
     echo -e "\n${BOLD}Selected:${RESET} $selected_name"
     echo -e "${CYAN}What would you like to do with this OS image?${RESET}"
-    echo -e "  ${GREEN}[1]${RESET} Flash & Install directly to Hard Drive / SSD (/dev/sda)"
+    echo -e "  ${GREEN}[1]${RESET} Flash & Install directly to Hard Drive / SSD"
     echo -e "  ${GREEN}[2]${RESET} Live DRAM Boot (Mount/Extract in RAM and kexec into it)"
     echo -e "  ${GREEN}[3]${RESET} Download ISO to local storage"
     echo -e "  ${GREEN}[4]${RESET} Back to Menu"
@@ -334,34 +426,11 @@ github_release_os_installer() {
 
     case "$action_choice" in
         1)
-            echo -e "\n${YELLOW}=== Storage Drives Detected ===${RESET}"
-            lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null || fdisk -l | grep "Disk /dev"
-            echo ""
-            echo "Enter target drive to install this OS to (e.g. /dev/sda, /dev/nvme0n1):"
-            read -r target_dev
-
-            if [ ! -b "$target_dev" ]; then
-                echo -e "${RED}Error: '$target_dev' is not a valid block device!${RESET}"
+            if select_target_drive; then
+                flash_image_to_drive "$selected_url" "$SELECTED_DEV" "$selected_name"
+            else
                 read -r _
-                return
             fi
-
-            echo -e "${RED}${BOLD}WARNING: Writing $selected_name will ERASE ALL DATA on $target_dev!${RESET}"
-            echo -n "Type 'YES' to proceed with installation: "
-            read -r confirm
-            if [ "$confirm" != "YES" ]; then
-                echo "Canceled."
-                read -r _
-                return
-            fi
-
-            echo -e "\n${GREEN}Streaming and writing $selected_name to $target_dev...${RESET}"
-            curl -L "$selected_url" | dd of="$target_dev" bs=4M status=progress conv=fdatasync
-            sync
-            echo -e "\n${GREEN}✓ Installation complete!${RESET}"
-            echo -e "You can now reboot your PC and it will boot into your newly installed OS from $target_dev."
-            echo "Press Enter to return..."
-            read -r _
             ;;
         2)
             echo -e "\n${GREEN}Downloading $selected_name into DRAM (/tmp/target_os.iso)...${RESET}"
@@ -374,10 +443,10 @@ github_release_os_installer() {
 
                 extract_iso_assets "/tmp/target_os.iso" "/tmp/extracted_iso"
 
-                # Locate kernel
-                k_file=$(find /tmp/extracted_iso -type f \( -name "vmlinuz*" -o -name "linux*" -o -name "bzImage*" \) 2>/dev/null | head -n1)
-                # Locate initrd
-                i_file=$(find /tmp/extracted_iso -type f \( -name "initrd*" -o -name "initramfs*" \) 2>/dev/null | head -n1)
+                # Locate kernel using case-insensitive find
+                k_file=$(find /tmp/extracted_iso -type f \( -iname "vmlinuz*" -o -iname "linux*" -o -iname "bzImage*" -o -iname "kernel*" \) ! -iname "*.c32" ! -iname "*.cfg" ! -iname "*.msg" ! -iname "*.txt" ! -iname "*.png" 2>/dev/null | head -n1)
+                # Locate initrd using case-insensitive find
+                i_file=$(find /tmp/extracted_iso -type f \( -iname "initrd*" -o -iname "initramfs*" -o -iname "rootfs.cpio*" \) ! -iname "*.cfg" ! -iname "*.txt" 2>/dev/null | head -n1)
 
                 if [ -n "$k_file" ]; then
                     echo -e "${GREEN}✓ Found Kernel:${RESET} $k_file"
@@ -641,41 +710,96 @@ online_netboot_menu() {
 
 flash_drive_utility() {
     show_banner
-    echo -e "${YELLOW}=== Flash Downloaded OS ISO to Internal Drive / SSD ===${RESET}\n"
+    echo -e "${YELLOW}=== Flash OS Image to Internal Drive / SSD ===${RESET}\n"
     echo -e "${RED}${BOLD}WARNING: Writing an image will ERASE the target drive!${RESET}\n"
-    
-    echo -e "${CYAN}Available Storage Drives:${RESET}"
-    lsblk -d -o NAME,SIZE,MODEL,TRAN 2>/dev/null || fdisk -l | grep "Disk /dev"
+
+    # Step 1: Select target storage drive
+    if ! select_target_drive; then
+        echo -e "${YELLOW}Aborted drive selection.${RESET}"
+        read -r _
+        return
+    fi
+    target_drive="$SELECTED_DEV"
+
+    # Step 2: Select image source
+    echo -e "\n${CYAN}Selected Target Drive:${RESET} ${BOLD}${target_drive}${RESET}"
+    echo -e "${CYAN}Choose Image Source:${RESET}"
+    echo -e "  [${GREEN}1${RESET}] From GitHub Repository Release (e.g. i2qq/BootOS)"
+    echo -e "  [${GREEN}2${RESET}] From Direct Download URL (ISO or IMG)"
+
+    local_isos=$(ls /tmp/*.iso /tmp/*.img 2>/dev/null || true)
+    if [ -n "$local_isos" ]; then
+        echo -e "  [${GREEN}3${RESET}] Use already downloaded ISO in RAM (/tmp)"
+    fi
+    echo -e "  [${GREEN}4${RESET}] Back to Menu"
     echo ""
-    echo "Enter direct URL of the ISO image to download:"
-    read -r iso_url
-    if [ -z "$iso_url" ]; then
-        echo "Aborted."
-        read -r _
-        return
-    fi
+    echo -n "Select source [1-4]: "
+    read -r src_choice
 
-    echo "Enter target drive path (e.g. /dev/sda, /dev/nvme0n1):"
-    read -r target_drive
+    case "$src_choice" in
+        1)
+            echo -e "
+Enter GitHub repository or release URL (e.g. ${CYAN}i2qq/BootOS${RESET}):"
+            echo -n "Repo: "
+            read -r gh_input
+            if [ -z "$gh_input" ]; then
+                echo "Aborted."
+                read -r _
+                return
+            fi
+            if resolve_github_release_assets "$gh_input"; then
+                flash_image_to_drive "$GH_SELECTED_URL" "$target_drive" "$GH_SELECTED_NAME"
+            else
+                read -r _
+            fi
+            ;;
+        2)
+            echo -e "\nEnter direct URL of the ISO image (or GitHub URL):"
+            read -r iso_url
+            if [ -z "$iso_url" ]; then
+                echo "Aborted."
+                read -r _
+                return
+            fi
 
-    if [ ! -b "$target_drive" ]; then
-        echo -e "${RED}Error: '$target_drive' is not a valid block device!${RESET}"
-        read -r _
-        return
-    fi
-
-    echo -e "${RED}Are you absolutely sure you want to write to $target_drive? (type 'YES')${RESET}"
-    read -r confirm
-    if [ "$confirm" != "YES" ]; then
-        echo "Canceled."
-        read -r _
-        return
-    fi
-
-    echo -e "${GREEN}Streaming and writing ISO directly to $target_drive...${RESET}"
-    curl -L "$iso_url" | dd of="$target_drive" bs=4M status=progress conv=fdatasync
-    echo -e "\n${GREEN}Write complete! You can now reboot into the installed system.${RESET}"
-    read -r _
+            # Auto-detect if user entered a GitHub URL instead of direct ISO URL
+            if echo "$iso_url" | grep -qE "(github\.com|^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$)"; then
+                echo -e "${CYAN}Detected GitHub Repository! Querying release assets...${RESET}"
+                if resolve_github_release_assets "$iso_url"; then
+                    flash_image_to_drive "$GH_SELECTED_URL" "$target_drive" "$GH_SELECTED_NAME"
+                else
+                    read -r _
+                fi
+            else
+                flash_image_to_drive "$iso_url" "$target_drive" "Direct Download Image"
+            fi
+            ;;
+        3)
+            if [ -n "$local_isos" ]; then
+                echo -e "\n${CYAN}Available local images in RAM:${RESET}"
+                l_idx=1
+                for f in $local_isos; do
+                    sz=$(ls -lh "$f" | awk '{print $5}')
+                    echo -e "  [${GREEN}$l_idx${RESET}] $f ($sz)"
+                    l_idx=$((l_idx + 1))
+                done
+                echo -n "Select file [1-$((l_idx - 1))]: "
+                read -r l_choice
+                chosen_iso=$(echo "$local_isos" | sed -n "${l_choice}p")
+                if [ -n "$chosen_iso" ] && [ -f "$chosen_iso" ]; then
+                    flash_image_to_drive "$chosen_iso" "$target_drive" "$(basename "$chosen_iso")"
+                else
+                    echo -e "${RED}Invalid selection!${RESET}"
+                    read -r _
+                fi
+            else
+                return
+            fi
+            ;;
+        *)
+            return
+            ;;
+    esac
 }
 
 # Main Loop
