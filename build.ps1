@@ -29,12 +29,13 @@ if (Test-Path "$workspacePath\bootos.iso") {
     Write-Host " File: $($iso.FullName)" -ForegroundColor White
     Write-Host " Size: $sizeMB MB (Well under 1 GB, fits easily on a 2GB USB)" -ForegroundColor White
     Write-Host "==========================================================" -ForegroundColor Green
-    # Build standalone Windows executable flasher & runner
+    # Build standalone Windows GUI flasher & runner
     $gccCheck = Get-Command gcc.exe -ErrorAction SilentlyContinue
-    if ($gccCheck -and (Test-Path "$workspacePath\src\bootos-flasher.c")) {
-        Write-Host "Compiling standalone Windows executable flasher (bootos-flasher.exe)..." -ForegroundColor Cyan
-        & gcc -O2 "$workspacePath\src\bootos-flasher.c" -o "$workspacePath\bootos-flasher.exe"
-        Copy-Item "$workspacePath\bootos-flasher.exe" "$workspacePath\bootos.exe" -Force
+    if ($gccCheck -and (Test-Path "$workspacePath\src\bootos-flasher-gui.c")) {
+        Write-Host "Compiling standalone Windows GUI flasher (bootos-flasher-gui.exe)..." -ForegroundColor Cyan
+        & gcc -O2 -mwindows "$workspacePath\src\bootos-flasher-gui.c" -o "$workspacePath\bootos-flasher-gui.exe" -lcomctl32 -lcomdlg32
+        Copy-Item "$workspacePath\bootos-flasher-gui.exe" "$workspacePath\bootos-flasher.exe" -Force
+        Copy-Item "$workspacePath\bootos-flasher-gui.exe" "$workspacePath\bootos.exe" -Force
     }
 
     Write-Host "`nTo flash to USB (No Rufus required):" -ForegroundColor Cyan
