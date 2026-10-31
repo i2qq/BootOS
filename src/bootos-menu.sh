@@ -20,19 +20,30 @@ get_ram_info() {
 
 get_net_info() {
     ip_addr=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    if [ -z "$ip_addr" ]; then
+        ip_addr=$(ip -o -4 addr show 2>/dev/null | grep -v ' lo ' | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    fi
     if [ -n "$ip_addr" ]; then
         echo -e "${GREEN}Connected ($ip_addr)${RESET}"
     else
-        echo -e "${RED}Disconnected (Run Option 5)${RESET}"
+        echo -e "${RED}Disconnected (Run Option 7)${RESET}"
     fi
 }
 
 check_internet() {
+    # 1. ICMP ping (fast)
     if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
         return 0
-    else
-        return 1
     fi
+    # 2. HTTP connectivity (in case firewall blocks ICMP)
+    if curl -s --connect-timeout 2 -I http://1.1.1.1 >/dev/null 2>&1 || wget -q -T 2 -O - http://1.1.1.1 >/dev/null 2>&1; then
+        return 0
+    fi
+    # 3. DNS lookup test
+    if nslookup google.com 1.1.1.1 >/dev/null 2>&1 || nslookup google.com 8.8.8.8 >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 show_banner() {
@@ -53,31 +64,67 @@ show_banner() {
 }
 
 setup_network() {
-    echo -e "\n${YELLOW}Scanning for hardware and probing network drivers...${RESET}"
+    echo -e "\n${YELLOW}=== Network Hardware Scanning & Configuration ===${RESET}\n"
     depmod -a 2>/dev/null || true
 
-    for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
+    echo "1. Probing network card drivers..."
+    for mod in e1000 e1000e igb igc virtio_net vmxnet3 r8169 r8152 cdc_ether ax88179_178a asix pcnet32 tg3 b44 forcedeth 8139too 8139cp atlantic sky2 alx hv_netvsc iwlwifi iwlmvm mt7921e mt7921u rtw88_8821ce rtw88_8822ce rtw89_8852ae rtw89_8852be; do
         modprobe "$mod" 2>/dev/null || true
     done
 
+    # Probe PCI modaliases
     find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
     sleep 1
 
-    echo -e "${YELLOW}Configuring Network Interfaces via DHCP...${RESET}"
-    ifaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo')
-    
+    echo "2. Detecting network interfaces..."
+    ifaces=$(ls /sys/class/net 2>/dev/null | grep -v '^lo$')
+
     if [ -z "$ifaces" ]; then
-        echo -e "${RED}No network interfaces detected!${RESET}"
-        echo -e "If running in a VM, check that Network Adapter is enabled (NAT or Bridged)."
+        echo -e "${RED}✗ No network interfaces detected!${RESET}\n"
+        echo -e "${CYAN}Hardware Diagnostics:${RESET}"
+        lspci -nn 2>/dev/null | grep -iE 'ethernet|network|wireless' || echo "  (No PCI network adapters found via lspci)"
+        echo -e "\n${YELLOW}Troubleshooting Tips:${RESET}"
+        echo " - In VirtualBox: Open VM Settings -> Network -> Check 'Enable Network Adapter', Attached to: NAT."
+        echo " - On Physical PC: Ensure Ethernet cable is firmly plugged in or Wi-Fi card is supported."
+        echo -e "\nPress Enter to return..."
+        read -r _
+        return 1
     fi
 
+    echo -e "Detected interfaces: ${BOLD}$ifaces${RESET}\n"
+
     for iface in $ifaces; do
-        echo -e "Bringing up ${BOLD}$iface${RESET}..."
+        echo -e "--- Configuring ${CYAN}${BOLD}$iface${RESET} ---"
         ip link set "$iface" up 2>/dev/null
+
+        # Check for carrier (up to 3 seconds for PHY auto-negotiation)
+        echo -n "Waiting for link carrier..."
+        for attempt in 1 2 3; do
+            carrier=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo "0")
+            if [ "$carrier" = "1" ]; then
+                break
+            fi
+            sleep 1
+            echo -n "."
+        done
+        echo ""
+
+        carrier_state=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo "unknown")
+        operstate=$(cat "/sys/class/net/$iface/operstate" 2>/dev/null || echo "unknown")
+        echo "Link State: operstate=$operstate, carrier=$carrier_state"
+
+        echo "Requesting IP via DHCP (udhcpc)..."
         if [ -f /usr/share/udhcpc/default.script ]; then
-            udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -n -q -t 5 2>/dev/null || true
+            udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -n -q -t 5 -T 2 2>&1
         else
-            udhcpc -i "$iface" -n -q -t 5 2>/dev/null || true
+            udhcpc -i "$iface" -n -q -t 5 -T 2 2>&1
+        fi
+
+        assigned_ip=$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+        if [ -n "$assigned_ip" ]; then
+            echo -e "${GREEN}✓ Assigned IP: $assigned_ip on $iface${RESET}\n"
+        else
+            echo -e "${YELLOW}! No DHCP lease obtained on $iface${RESET}\n"
         fi
     done
 
@@ -87,13 +134,19 @@ setup_network() {
         echo "nameserver 8.8.8.8" >> /etc/resolv.conf
     fi
 
+    echo "3. Testing internet connectivity..."
     if check_internet; then
-        echo -e "${GREEN}✓ Internet connection established!${RESET}"
+        echo -e "${GREEN}✓ Internet connection successfully established!${RESET}"
+        current_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+        [ -n "$current_ip" ] && echo -e "Outbound IP: ${BOLD}$current_ip${RESET}"
     else
         echo -e "${RED}✗ Could not reach internet.${RESET}"
-        echo -e "In VirtualBox: Ensure VM Settings -> Network -> 'Attached to: NAT' or 'Bridged Adapter'."
+        echo "Default route: $(ip route show default 2>/dev/null || echo 'None')"
+        echo "DNS servers  : $(cat /etc/resolv.conf 2>/dev/null | tr '\n' ' ')"
+        echo -e "\nIf in VirtualBox: VM Settings -> Network -> Adapter 1 -> Attached to: NAT."
+        echo "If on physical PC: Check that your router's DHCP server is running and cable is plugged in."
     fi
-    echo -e "\nPress Enter to continue..."
+    echo -e "\nPress Enter to return..."
     read -r _
 }
 

@@ -37,6 +37,8 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
   apk update
   apk add --no-cache \
     linux-lts \
+    linux-firmware-rtl_nic \
+    linux-firmware-rtlwifi \
     kexec-tools \
     7zip \
     curl \
@@ -61,17 +63,25 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xf86-video-vesa \
     xf86-video-fbdev \
     xf86-input-libinput \
+    xf86-input-evdev \
+    xf86-input-vmmouse \
+    xf86-input-synaptics \
     openbox \
-    dbus
+    dbus \
+    eudev \
+    eudev-hwids \
+    xsetroot \
+    adwaita-icon-theme
 "
 
 # Copy kernel out to ISO boot folder
 cp "${ROOTFS_DIR}/boot"/vmlinuz-lts "${ISO_ROOT}/boot/vmlinuz"
 
-# Strip unneeded huge firmware (keep Intel/Realtek/Atheros Wi-Fi & Ethernet)
+# Strip unneeded huge firmware (keep Intel/Realtek Ethernet & Wi-Fi)
 echo "--> Optimizing firmware footprint to keep initramfs ultra-compact..."
 mkdir -p /tmp/fw_keep
 cp -r "${ROOTFS_DIR}/lib/firmware/intel" /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/rtl_nic" /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/rtlwifi" /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/ath"* /tmp/fw_keep/ 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware"/*
@@ -158,15 +168,21 @@ mount -t tmpfs none /run
 KERNEL_VER=$(uname -r)
 depmod -a "$KERNEL_VER" 2>/dev/null || true
 
-# 2. Trigger mdev coldplug device detection & module auto-loading
-echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
-mdev -s 2>/dev/null || true
+# 2. Start eudev daemon for dynamic device detection, hotplug, and Xorg input
+mkdir -p /run/udev
+if command -v udevd >/dev/null 2>&1; then
+    udevd --daemon 2>/dev/null || true
+    udevadm trigger --action=add 2>/dev/null || true
+    udevadm settle --timeout=5 2>/dev/null || true
+else
+    echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
+    mdev -s 2>/dev/null || true
+fi
 
 # 3. Explicitly probe core storage, loop & filesystem modules
-modprobe loop 2>/dev/null || true
-modprobe isofs 2>/dev/null || true
-modprobe squashfs 2>/dev/null || true
-modprobe overlay 2>/dev/null || true
+for mod in loop isofs squashfs overlay; do
+    modprobe $mod 2>/dev/null || true
+done
 
 # Ensure loop device nodes exist in /dev
 [ -e /dev/loop-control ] || mknod /dev/loop-control c 10 237 2>/dev/null || true
@@ -174,20 +190,25 @@ for i in 0 1 2 3 4 5 6 7; do
     [ -e "/dev/loop$i" ] || mknod "/dev/loop$i" b 7 "$i" 2>/dev/null || true
 done
 
-# 4. Explicitly probe common virtual and physical NIC modules
-for mod in e1000 e1000e igb virtio_net vmxnet3 r8169 pcnet32 tg3 b44 forcedeth 8139too 8139cp; do
+# 4a. Explicitly probe mouse, keyboard, and input devices (PS/2, USB, VirtualBox, VMware)
+for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse joydev; do
     modprobe $mod 2>/dev/null || true
 done
 
-# 4b. Explicitly probe graphics and display modules (VBox, Intel, AMD, generic DRM)
+# 4b. Explicitly probe physical & virtual network drivers
+for mod in e1000 e1000e igb igc virtio_net vmxnet3 r8169 r8152 cdc_ether ax88179_178a asix pcnet32 tg3 b44 forcedeth 8139too 8139cp atlantic sky2 alx hv_netvsc iwlwifi iwlmvm mt7921e mt7921u rtw88_8821ce rtw88_8822ce rtw89_8852ae rtw89_8852be; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# 4c. Explicitly probe graphics and display modules (VBox, Intel, AMD, generic DRM)
 for mod in vboxvideo drm drm_kms_helper bochs_drm virtio_gpu fb_sys_fops syscopyarea sysfillrect sysimgblt; do
     modprobe $mod 2>/dev/null || true
 done
 
-mkdir -p /tmp/.X11-unix /var/log /run/user/0
+mkdir -p /tmp/.X11-unix /var/log /run/user/0 /etc/X11/xorg.conf.d
 chmod 1777 /tmp/.X11-unix
 
-# 5. Probe PCI modaliases
+# 5. Probe PCI modaliases for any additional hardware
 find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
 
 # 6. Bring up loopback
@@ -198,9 +219,9 @@ echo "nameserver 1.1.1.1" > /etc/resolv.conf
 echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 
 # 8. Auto-configure network interfaces via DHCP
-for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo'); do
+for iface in $(ls /sys/class/net 2>/dev/null | grep -v '^lo$'); do
     ip link set "$iface" up 2>/dev/null
-    udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 3 2>/dev/null &
+    udhcpc -i "$iface" -s /usr/share/udhcpc/default.script -b -T 2 -t 5 2>/dev/null &
 done
 
 # Start BootOS with persistent loop & TTY
