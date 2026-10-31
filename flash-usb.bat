@@ -10,7 +10,9 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-if exist "%~dp0bootos-flasher.exe" (
+if exist "%~dp0bootos-flasher-gui.exe" (
+    "%~dp0bootos-flasher-gui.exe"
+) else if exist "%~dp0bootos-flasher.exe" (
     "%~dp0bootos-flasher.exe"
 ) else if exist "%~dp0bootos.exe" (
     "%~dp0bootos.exe"
