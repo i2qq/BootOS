@@ -3,15 +3,30 @@
 # BootOS File Explorer Native Desktop Launcher
 # ==============================================================================
 export DISPLAY="${DISPLAY:-:0}"
-mkdir -p /tmp/.X11-unix /run/user/0 /root/.config/openbox
+# 1. Setup required runtime directories
+mkdir -p /tmp/.X11-unix /run/user/0 /run/udev /root/.config/openbox /var/log /etc/X11/xorg.conf.d
 chmod 1777 /tmp/.X11-unix
 chmod 700 /run/user/0
 export XDG_RUNTIME_DIR=/run/user/0
+export DISPLAY="${DISPLAY:-:0}"
 
-# 1. Probe input devices
-for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse; do
+# 2. Ensure udev daemon is active & coldplug devices are recognized for Xorg input
+if command -v udevd >/dev/null 2>&1; then
+    if ! pgrep -x udevd >/dev/null 2>&1; then
+        udevd --daemon 2>/dev/null || true
+        udevadm trigger --action=add 2>/dev/null || true
+        udevadm settle --timeout=3 2>/dev/null || true
+    fi
+fi
+
+# 3. Explicitly probe mouse, keyboard, and virtual machine input drivers
+for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse vboxguest vboxvideo vboxsf; do
     modprobe "$mod" 2>/dev/null || true
 done
+
+# 4. Setup DBus machine-id
+[ -f /var/lib/dbus/machine-id ] || dbus-uuidgen --ensure 2>/dev/null || true
+[ -f /etc/machine-id ] || dbus-uuidgen --ensure /etc/machine-id 2>/dev/null || true
 
 EXPLORER_SCRIPT="/usr/local/bin/bootos_explorer.py"
 if [ ! -f "$EXPLORER_SCRIPT" ] && [ -f "$(dirname "$0")/bootos_explorer.py" ]; then

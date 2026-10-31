@@ -249,15 +249,23 @@ void ExecuteBootOSInVM(const char *isoPath) {
     DWORD attr = GetFileAttributesA(vboxPath);
     if (attr != INVALID_FILE_ATTRIBUTES) {
         printf("Detected Oracle VirtualBox! Launching BootOS...\n");
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
         char cmd[512];
-        snprintf(cmd, sizeof(cmd), "vde-vlm start vmbootos2 --gui");
-        int res = system(cmd);
-        if (res != 0) {
-            snprintf(cmd, sizeof(cmd), "\"%s\" startvm vmbootos2 --type gui", vboxPath);
-            system(cmd);
+        snprintf(cmd, sizeof(cmd), "\"%s\" startvm vmbootos2.92 --type gui", vboxPath);
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            printf("\nBootOS VirtualBox window launched!\n");
+            return;
         }
-        printf("\nBootOS VirtualBox window launched!\n");
-        return;
+        snprintf(cmd, sizeof(cmd), "\"%s\" startvm vmbootos2 --type gui", vboxPath);
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            printf("\nBootOS VirtualBox window launched!\n");
+            return;
+        }
     }
 
     printf("Oracle VirtualBox was not found at %s.\n", vboxPath);

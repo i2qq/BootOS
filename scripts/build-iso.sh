@@ -86,11 +86,17 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     gawk \
     nano \
     less \
+    font-noto-emoji \
     python3 \
     python3-tkinter \
     py3-pip \
     py3-pillow \
-    py3-rich
+    py3-rich \
+    py3-pydantic \
+    py3-starlette \
+    py3-aiofiles \
+    py3-anyio \
+    py3-websockets
 "
 
 # Copy kernel out to ISO boot folder
@@ -159,9 +165,18 @@ ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/bin/explorer"
 
 # Pre-install Python 3 libraries: Pillow, FastAPI, Gradio, Rich, ABC
 echo "--> Installing requested Python 3 libraries: Pillow, FastAPI, Gradio, Rich, ABC..."
+mkdir -p "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" "${ROOTFS_DIR}/dev"
+mount -t proc none "${ROOTFS_DIR}/proc" 2>/dev/null || true
+mount -t sysfs none "${ROOTFS_DIR}/sys" 2>/dev/null || true
+mount --bind /dev "${ROOTFS_DIR}/dev" 2>/dev/null || true
+
 chroot "${ROOTFS_DIR}" /bin/sh -c "
   pip install --no-cache-dir --break-system-packages fastapi gradio
 "
+
+umount -l "${ROOTFS_DIR}/proc" 2>/dev/null || true
+umount -l "${ROOTFS_DIR}/sys" 2>/dev/null || true
+umount -l "${ROOTFS_DIR}/dev" 2>/dev/null || true
 
 mkdir -p "${ROOTFS_DIR}/tmp/.X11-unix" "${ROOTFS_DIR}/var/log"
 chmod 1777 "${ROOTFS_DIR}/tmp/.X11-unix"
@@ -382,13 +397,13 @@ LABEL bootos
   MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
+  APPEND kexec_load_disabled=0 console=tty0 console=tty1 init=/init
 
 LABEL bootos_quiet
   MENU LABEL ^2. Start BootOS (Quiet Mode)
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND quiet console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
+  APPEND quiet kexec_load_disabled=0 console=tty0 console=tty1 init=/init
 EOF
 
 # 7. Configure GRUB (UEFI Boot)
@@ -398,12 +413,12 @@ set default="0"
 set timeout=3
 
 menuentry "BootOS (100% DRAM Mode)" {
-    linux /boot/vmlinuz console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
+    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 console=tty1 init=/init
     initrd /boot/initramfs.gz
 }
 
 menuentry "BootOS (Quiet Mode)" {
-    linux /boot/vmlinuz quiet console=tty0 console=tty1 init=/init lockdown=none kexec_load_disabled=0
+    linux /boot/vmlinuz quiet kexec_load_disabled=0 console=tty0 console=tty1 init=/init
     initrd /boot/initramfs.gz
 }
 EOF

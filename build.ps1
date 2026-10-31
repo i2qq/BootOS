@@ -33,7 +33,9 @@ if (Test-Path "$workspacePath\bootos.iso") {
     $gccCheck = Get-Command gcc.exe -ErrorAction SilentlyContinue
     if ($gccCheck -and (Test-Path "$workspacePath\src\bootos-flasher-gui.c")) {
         Write-Host "Compiling standalone Windows GUI flasher (bootos-flasher-gui.exe)..." -ForegroundColor Cyan
-        & gcc -O2 -mwindows "$workspacePath\src\bootos-flasher-gui.c" -o "$workspacePath\bootos-flasher-gui.exe" -lcomctl32 -lcomdlg32
+        & windres "$workspacePath\src\bootos-flasher.rc" -O coff -o "$workspacePath\bootos-flasher.res"
+        & gcc -O2 -mwindows "$workspacePath\src\bootos-flasher-gui.c" "$workspacePath\bootos-flasher.res" -o "$workspacePath\bootos-flasher-gui.exe" -lcomctl32 -lcomdlg32 -lole32 -lshell32
+        & gcc -O2 "$workspacePath\src\bootos-flasher.c" "$workspacePath\bootos-flasher.res" -o "$workspacePath\bootos-flasher-cli.exe" -lole32 -lshell32
         Copy-Item "$workspacePath\bootos-flasher-gui.exe" "$workspacePath\bootos-flasher.exe" -Force
         Copy-Item "$workspacePath\bootos-flasher-gui.exe" "$workspacePath\bootos.exe" -Force
         if (Test-Path "$workspacePath\scripts\sign-binaries.ps1") {

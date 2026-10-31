@@ -151,7 +151,7 @@ class BootOSExplorerApp(tk.Tk):
         super().__init__()
 
         self.title("BootOS File Explorer")
-        self.geometry("1100, 680")
+        self.geometry("1100x680")
         self.minsize(800, 500)
         self.configure(bg=CLR_BG)
 

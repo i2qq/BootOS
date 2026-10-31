@@ -573,9 +573,24 @@ void ExecuteInVirtualBox(HWND hWnd) {
     DWORD attr = GetFileAttributesA(vboxPath);
     if (attr != INVALID_FILE_ATTRIBUTES) {
         SetWindowTextA(g_hStatusLabel, "Launching BootOS inside Oracle VirtualBox...");
-        system("vde-vlm start vmbootos2 --gui 2>nul || \"C:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe\" startvm vmbootos2 --type gui");
-        SetWindowTextA(g_hStatusLabel, "VirtualBox machine window opened!");
-        return;
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "\"%s\" startvm vmbootos2.92 --type gui", vboxPath);
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            SetWindowTextA(g_hStatusLabel, "VirtualBox machine window opened!");
+            return;
+        }
+        // Fallback to vmbootos2 if vmbootos2.92 not present
+        snprintf(cmd, sizeof(cmd), "\"%s\" startvm vmbootos2 --type gui", vboxPath);
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            SetWindowTextA(g_hStatusLabel, "VirtualBox machine window opened!");
+            return;
+        }
     }
 
     MessageBoxA(hWnd, "Oracle VirtualBox was not found at:\nC:\\Program Files\\Oracle\\VirtualBox\\VBoxManage.exe\n\nPlease install VirtualBox or use 'Make USB Executable' to boot on your PC!",
@@ -620,16 +635,26 @@ void FormatDriveToFat32(HWND hWnd) {
     fprintf(f, "select disk %d\nclean\nconvert mbr\ncreate partition primary\nactive\nformat fs=fat32 quick label=\"USB DRIVE\"\nassign\nexit\n", target->diskNumber);
     fclose(f);
 
-    char cmd[MAX_PATH + 32];
-    snprintf(cmd, sizeof(cmd), "diskpart /s \"%s\"", tmpFile);
-    system(cmd);
+    char cmd[MAX_PATH + 64];
+    snprintf(cmd, sizeof(cmd), "diskpart.exe /s \"%s\"", tmpFile);
+
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi = { 0 };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 30000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
     DeleteFileA(tmpFile);
 
     RefreshDriveList();
     SetWindowTextA(g_hStatusLabel, "SUCCESS: USB drive formatted and restored to FAT32!");
     SetWindowTextA(g_hStatsLabel, "Full capacity restored. Opened in File Explorer.");
 
-    system("explorer.exe");
+    ShellExecuteA(NULL, "open", "explorer.exe", NULL, NULL, SW_SHOWNORMAL);
 
     MessageBoxA(hWnd,
                 "USB Drive has been successfully restored to a clean Windows FAT32 drive!\n\n"
