@@ -20,6 +20,7 @@
 #define ID_STATUS_LABEL     110
 #define ID_STATS_LABEL      111
 #define ID_CHK_COPY_ISO     112
+#define ID_BTN_FORMAT_FAT32 113
 #define ID_TIMER_PROGRESS   201
 
 #define BUFFER_SIZE (1024 * 1024) // 1 MB chunk
@@ -57,6 +58,7 @@ static HWND g_hEditIso = NULL;
 static HWND g_hComboDrives = NULL;
 static HWND g_hBtnBrowse = NULL;
 static HWND g_hBtnRefresh = NULL;
+static HWND g_hBtnFormat = NULL;
 static HWND g_hBtnMakeExec = NULL;
 static HWND g_hBtnRawFlash = NULL;
 static HWND g_hBtnRunVBox = NULL;
@@ -580,6 +582,61 @@ void ExecuteInVirtualBox(HWND hWnd) {
                 "Oracle VirtualBox Not Found", MB_OK | MB_ICONINFORMATION);
 }
 
+void FormatDriveToFat32(HWND hWnd) {
+    int curSel = (int)SendMessage(g_hComboDrives, CB_GETCURSEL, 0, 0);
+    if (curSel == CB_ERR) {
+        MessageBoxA(hWnd, "Please select a USB drive from the dropdown first.", "No Drive Selected", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    int driveIdx = (int)SendMessage(g_hComboDrives, CB_GETITEMDATA, curSel, 0);
+    if (driveIdx < 0 || driveIdx >= g_driveCount) return;
+    GuiDriveInfo *target = &g_drives[driveIdx];
+
+    // Protection check
+    if (target->isSystem || target->letter == 'C' || target->letter == 'c' || target->letter == 'D' || target->letter == 'd' || !target->isUsb) {
+        MessageBoxA(hWnd, "Protected Drive: C: and D: internal drives are strictly shielded and cannot be touched!", "Drive Protected", MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    char confirmMsg[512];
+    snprintf(confirmMsg, sizeof(confirmMsg),
+             "Clean format and restore USB Disk %d (%s, %.1f GB) to a clean FAT32 Windows drive?\n\n"
+             "This will wipe the raw Linux partitions and restore full Windows File Explorer access.",
+             target->diskNumber, target->product, target->sizeGB);
+    if (MessageBoxA(hWnd, confirmMsg, "Confirm USB Restore", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+
+    SetWindowTextA(g_hStatusLabel, "Restoring USB drive: Running automated diskpart clean & FAT32 format...");
+    SetWindowTextA(g_hStatsLabel, "Wiping raw Linux partition and recreating Windows FAT32 partition...");
+
+    char tmpFile[MAX_PATH];
+    GetTempPathA(sizeof(tmpFile), tmpFile);
+    strncat(tmpFile, "dp_restore_usb.txt", sizeof(tmpFile) - strlen(tmpFile) - 1);
+
+    FILE *f = fopen(tmpFile, "w");
+    if (!f) {
+        MessageBoxA(hWnd, "Failed to create diskpart script.", "Error", MB_OK | MB_ICONERROR);
+        return;
+    }
+    fprintf(f, "select disk %d\nclean\nconvert mbr\ncreate partition primary\nactive\nformat fs=fat32 quick label=\"USB DRIVE\"\nassign\nexit\n", target->diskNumber);
+    fclose(f);
+
+    char cmd[MAX_PATH + 32];
+    snprintf(cmd, sizeof(cmd), "diskpart /s \"%s\"", tmpFile);
+    system(cmd);
+    DeleteFileA(tmpFile);
+
+    RefreshDriveList();
+    SetWindowTextA(g_hStatusLabel, "SUCCESS: USB drive formatted and restored to FAT32!");
+    SetWindowTextA(g_hStatsLabel, "Full capacity restored. Opened in File Explorer.");
+
+    system("explorer.exe");
+
+    MessageBoxA(hWnd,
+                "USB Drive has been successfully restored to a clean Windows FAT32 drive!\n\n"
+                "Full capacity and normal drive letter are restored.",
+                "Restore Complete", MB_OK | MB_ICONINFORMATION);
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_CREATE: {
@@ -609,13 +666,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             g_hComboDrives = CreateWindowA("COMBOBOX", "",
                                            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                           20, 90, 420, 220, hWnd, (HMENU)ID_COMBO_DRIVES, g_hInstance, NULL);
+                                           20, 90, 360, 220, hWnd, (HMENU)ID_COMBO_DRIVES, g_hInstance, NULL);
             SendMessage(g_hComboDrives, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             g_hBtnRefresh = CreateWindowA("BUTTON", "Refresh",
                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                          450, 89, 95, 27, hWnd, (HMENU)ID_BTN_REFRESH, g_hInstance, NULL);
+                                          390, 89, 75, 27, hWnd, (HMENU)ID_BTN_REFRESH, g_hInstance, NULL);
             SendMessage(g_hBtnRefresh, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
+
+            g_hBtnFormat = CreateWindowA("BUTTON", "Restore FAT32",
+                                         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                         470, 89, 95, 27, hWnd, (HMENU)ID_BTN_FORMAT_FAT32, g_hInstance, NULL);
+            SendMessage(g_hBtnFormat, WM_SETFONT, (WPARAM)g_hFontNormal, TRUE);
 
             // Step 2: BootOS ISO Image
             HWND hLbl2 = CreateWindowA("STATIC", "2. BootOS ISO Image:",
@@ -751,6 +813,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 case ID_BTN_REFRESH:
                     RefreshDriveList();
                     SetWindowTextA(g_hStatusLabel, "Drive list refreshed.");
+                    break;
+                case ID_BTN_FORMAT_FAT32:
+                    FormatDriveToFat32(hWnd);
                     break;
                 case ID_BTN_MAKE_EXEC:
                     StartOperation(hWnd, FALSE);

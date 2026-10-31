@@ -50,10 +50,17 @@ if ($validTargets.Count -eq 0) {
     exit
 }
 
-$targetNum = Read-Host "Enter the Disk Number of the USB Drive to restore (e.g. 1, 2) or 'C' to Cancel"
-if ($targetNum -eq 'C' -or $targetNum -eq 'c') { exit }
-
-$targetNum = [int]$targetNum
+if ($validTargets.Count -eq 1) {
+    $defNum = $validTargets[0]
+    $defDisk = Get-Disk -Number $defNum
+    $ans = Read-Host "Detected USB: Disk $defNum ($($defDisk.FriendlyName)). Press ENTER to restore or 'C' to Cancel"
+    if ($ans -eq 'C' -or $ans -eq 'c') { exit }
+    $targetNum = if ([string]::IsNullOrWhiteSpace($ans)) { $defNum } else { [int]$ans }
+} else {
+    $targetNum = Read-Host "Enter the Disk Number of the USB Drive to restore (e.g. 1, 2) or 'C' to Cancel"
+    if ($targetNum -eq 'C' -or $targetNum -eq 'c') { exit }
+    $targetNum = [int]$targetNum
+}
 if ($targetNum -notin $validTargets) {
     Write-Host "`n[ERROR] Invalid or non-USB disk number selected." -ForegroundColor Red
     Read-Host "Press Enter to exit..."
