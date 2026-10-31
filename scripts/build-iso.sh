@@ -247,10 +247,36 @@ mkdir -p "${ROOTFS_DIR}/etc/sysctl.d"
 echo "kernel.kexec_load_disabled = 0" >> "${ROOTFS_DIR}/etc/sysctl.conf" 2>/dev/null || true
 echo "kernel.kexec_load_disabled = 0" > "${ROOTFS_DIR}/etc/sysctl.d/99-kexec.conf" 2>/dev/null || true
 
+# Bulletproof reboot & poweroff wrappers
+mkdir -p "${ROOTFS_DIR}/usr/local/bin" "${ROOTFS_DIR}/usr/local/sbin"
+cat <<'EOF' > "${ROOTFS_DIR}/usr/local/bin/reboot"
+#!/bin/sh
+sync
+echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+busybox reboot -f "$@" 2>/dev/null || reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
+EOF
+chmod +x "${ROOTFS_DIR}/usr/local/bin/reboot"
+cp "${ROOTFS_DIR}/usr/local/bin/reboot" "${ROOTFS_DIR}/usr/local/sbin/reboot"
+
+cat <<'EOF' > "${ROOTFS_DIR}/usr/local/bin/poweroff"
+#!/bin/sh
+sync
+echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+busybox poweroff -f "$@" 2>/dev/null || poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
+EOF
+chmod +x "${ROOTFS_DIR}/usr/local/bin/poweroff"
+cp "${ROOTFS_DIR}/usr/local/bin/poweroff" "${ROOTFS_DIR}/usr/local/sbin/poweroff"
+
+ln -sf /usr/local/bin/poweroff "${ROOTFS_DIR}/usr/local/bin/shutdown"
+ln -sf /usr/local/bin/poweroff "${ROOTFS_DIR}/usr/local/bin/halt"
+ln -sf /usr/local/sbin/poweroff "${ROOTFS_DIR}/usr/local/sbin/shutdown"
+ln -sf /usr/local/sbin/poweroff "${ROOTFS_DIR}/usr/local/sbin/halt" 
+
 # 5. Create /init wrapper with hardware detection & module auto-loading
 echo "--> Packing complete OS into RAM-resident initramfs..."
 cat <<'EOF' > "${ROOTFS_DIR}/init"
 #!/bin/sh
+trap 'sync; echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; busybox reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger' TERM INT QUIT
 mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev
@@ -408,6 +434,8 @@ EOF
 cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/isolinux/syslinux.cfg"
 cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/syslinux/syslinux.cfg"
 cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/boot/syslinux/syslinux.cfg"
+cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/isolinux.cfg"
+cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/syslinux.cfg"
 
 # 7. Configure GRUB (UEFI Boot)
 echo "--> Setting up GRUB for UEFI boot..."

@@ -312,6 +312,38 @@ flash_image_to_drive() {
     echo -e "${RED}${BOLD}======================================================${RESET}"
     echo -e "Image Source: ${BOLD}${img_name:-$src}${RESET}"
     echo -e "Target Drive: ${BOLD}${target}${RESET}\n"
+
+    # Disk capacity pre-flight check
+    target_bytes=0
+    if command -v blockdev >/dev/null 2>&1; then
+        target_bytes=$(blockdev --getsize64 "$target" 2>/dev/null || echo 0)
+    fi
+    if [ -z "$target_bytes" ] || [ "$target_bytes" -le 0 ]; then
+        s_base=$(basename "$target")
+        s_blocks=$(cat "/sys/class/block/$s_base/size" 2>/dev/null || echo 0)
+        target_bytes=$((s_blocks * 512))
+    fi
+    target_mb=$((target_bytes / 1048576))
+
+    if [ "$target_mb" -gt 0 ]; then
+        echo -e "Drive Capacity: ${CYAN}${target_mb} MB${RESET}"
+    fi
+
+    # Check source file size if local file
+    if [ -f "$src" ]; then
+        src_bytes=$(wc -c < "$src" 2>/dev/null || echo 0)
+        src_mb=$((src_bytes / 1048576))
+        if [ "$target_mb" -gt 0 ] && [ "$src_mb" -gt "$target_mb" ]; then
+            echo -e "\n${RED}${BOLD}ERROR: Insufficient drive space!${RESET}"
+            echo -e "Source image requires: ${RED}${src_mb} MB${RESET}"
+            echo -e "Target drive size    : ${YELLOW}${target_mb} MB${RESET}"
+            echo -e "Flashing aborted to prevent writing a truncated, unbootable disk."
+            echo "Press Enter to return..."
+            read -r _
+            return 1
+        fi
+    fi
+
     echo -n "Type 'YES' in capital letters to proceed: "
     read -r confirm
     if [ "$confirm" != "YES" ]; then
@@ -321,8 +353,9 @@ flash_image_to_drive() {
     fi
 
     echo -e "\n${GREEN}Writing $img_name to $target...${RESET}"
+    flash_err=0
     if [ -f "$src" ]; then
-        dd if="$src" of="$target" bs=4M conv=fsync
+        dd if="$src" of="$target" bs=4M conv=fsync || flash_err=$?
     else
         # URL source: verify final destination is not an HTML webpage
         if ! echo "$src" | grep -qE '(\.iso|\.img|\.raw|/releases/download/)'; then
@@ -333,17 +366,24 @@ flash_image_to_drive() {
                 return 1
             fi
         fi
-        curl -# -L "$src" | dd of="$target" bs=4M conv=fsync
+        (set -o pipefail 2>/dev/null; curl -# -L "$src" | dd of="$target" bs=4M conv=fsync) || flash_err=$?
+    fi
+
+    if [ "$flash_err" -ne 0 ]; then
+        echo -e "\n${RED}Error: Writing to $target failed or ran out of disk space (exit code $flash_err)!${RESET}"
+        echo -e "Target drive is likely too small for this operating system."
+        echo "Press Enter to return..."
+        read -r _
+        return 1
     fi
 
     sync
-    echo -e "\n${GREEN}✓ Flashing complete!${RESET}"
+    echo -e "\n${GREEN}✔ Flashing complete!${RESET}"
     echo -e "You can now reboot your PC and it will boot into the new OS from $target."
     echo "Press Enter to return..."
     read -r _
     return 0
 }
-
 # Helper to query and list GitHub release assets
 resolve_github_release_assets() {
     raw_repo="$1"
@@ -1312,12 +1352,15 @@ while true; do
             echo -e "\n${YELLOW}Preparing to reboot...${RESET}"
             save_persistent_state "auto"
             echo -e "${YELLOW}Rebooting system...${RESET}"
-            sleep 1
-            reboot
+            sync
+            echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+            busybox reboot -f 2>/dev/null || reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
             ;;
         13|"poweroff"|"shutdown")
             echo -e "\n${YELLOW}Shutting down...${RESET}"
-            poweroff
+            sync
+            echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+            busybox poweroff -f 2>/dev/null || poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
             ;;
         *)
             echo -e "\n${RED}Invalid option!${RESET}"
