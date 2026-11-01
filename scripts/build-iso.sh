@@ -285,9 +285,36 @@ cat <<'EOF' > "${ROOTFS_DIR}/root/.Xmodmap"
 keycode 94 = backslash bar backslash bar bar brokenbar
 ! Map backtick key under Esc (keysym grave) to pipe |
 keysym grave = bar asciitilde bar asciitilde
+! Ensure pointer mapping is default so mouse moves and clicks properly
+pointer = default
 EOF
-mkdir -p "${ROOTFS_DIR}/etc/X11"
+mkdir -p "${ROOTFS_DIR}/etc/X11/xorg.conf.d"
 cp "${ROOTFS_DIR}/root/.Xmodmap" "${ROOTFS_DIR}/etc/X11/Xmodmap"
+
+# Create Xorg input class configuration for keyboards and mice
+cat <<'EOF' > "${ROOTFS_DIR}/etc/X11/xorg.conf.d/00-keyboard.conf"
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "gb,us"
+    Option "XkbVariant" ","
+    Option "XkbOptions" "grp:alt_shift_toggle"
+EndSection
+EOF
+
+cat <<'EOF' > "${ROOTFS_DIR}/etc/X11/xorg.conf.d/50-mouse.conf"
+Section "InputClass"
+    Identifier "system-mouse-libinput"
+    MatchIsPointer "on"
+    Driver "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier "system-mouse-evdev"
+    MatchIsPointer "on"
+    Driver "evdev"
+EndSection
+EOF
 
 # Configure inittab
 cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
@@ -354,6 +381,7 @@ cp "${ROOTFS_DIR}/usr/local/bin/clear" "${ROOTFS_DIR}/usr/bin/clear" 2>/dev/null
 echo "--> Packing complete OS into RAM-resident initramfs..."
 cat <<'EOF' > "${ROOTFS_DIR}/init"
 #!/bin/sh
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH"
 trap 'sync; echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; busybox reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger' TERM INT QUIT
 
 mount -t proc none /proc
@@ -380,7 +408,7 @@ for mod in usbcore xhci-pci xhci-hcd ehci-pci ehci-hcd uhci-hcd ohci-pci ohci-hc
 done
 
 # Essential Input & HID (Keyboards, Mice, Touchpads)
-for mod in hid hid-generic usbhid evdev i8042 atkbd psmouse hid-multitouch; do
+for mod in hid hid-generic usbhid evdev mousedev uinput i8042 atkbd psmouse hid-multitouch; do
     modprobe $mod 2>/dev/null || true
 done
 

@@ -12,6 +12,7 @@ RED="\033[1;31m"
 MAGENTA="\033[1;35m"
 RESET="\033[0m"
 
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH"
 [ -z "$TERM" ] || [ "$TERM" = "linux" ] && export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 stty sane 2>/dev/null || true
