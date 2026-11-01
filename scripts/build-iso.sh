@@ -93,6 +93,9 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xterm \
     gparted \
     kbd \
+    kbd-bkeymaps \
+    xmodmap \
+    setxkbmap \
     syslinux \
     xorriso \
     alsa-lib \
@@ -275,6 +278,16 @@ set convert-meta off
 "`": "|"
 EOF
 cp "${ROOTFS_DIR}/etc/inputrc" "${ROOTFS_DIR}/root/.inputrc"
+
+# Create default .Xmodmap for UK and international physical keyboards
+cat <<'EOF' > "${ROOTFS_DIR}/root/.Xmodmap"
+! Map UK ISO key between Left Shift and Z (keycode 94 in X11) to backslash and bar
+keycode 94 = backslash bar backslash bar bar brokenbar
+! Map backtick key under Esc (keysym grave) to pipe |
+keysym grave = bar asciitilde bar asciitilde
+EOF
+mkdir -p "${ROOTFS_DIR}/etc/X11"
+cp "${ROOTFS_DIR}/root/.Xmodmap" "${ROOTFS_DIR}/etc/X11/Xmodmap"
 
 # Configure inittab
 cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"

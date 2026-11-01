@@ -16,6 +16,15 @@ RESET="\033[0m"
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 stty sane 2>/dev/null || true
 stty echo icanon 2>/dev/null || true
+
+# Auto-apply console keyboard mapping for UK keyboard if loadkeys is available
+if command -v loadkeys >/dev/null 2>&1; then
+    loadkeys <<'KBD_EOF' 2>/dev/null || true
+keycode 41 = bar asciitilde
+keycode 86 = backslash bar
+KBD_EOF
+fi
+
 printf "\033[2J\033[1;1H"
 
 get_ram_info() {

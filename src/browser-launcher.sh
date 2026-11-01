@@ -162,9 +162,12 @@ xsetroot -cursor_name left_ptr -solid "#1e1e2e" 2>/dev/null || true
 # Auto-detect native display resolution via RandR
 xrandr --auto 2>/dev/null || true
 
-# Map backtick key to pipe | for UK/international keyboards
-xmodmap -e "keysym grave = bar asciitilde bar asciitilde" 2>/dev/null || true
-xmodmap -e "keycode 94 = backslash bar" 2>/dev/null || true
+# Map backtick key to pipe | and UK ISO key (keycode 94) to \ and |
+if command -v xmodmap >/dev/null 2>&1; then
+    xmodmap -e "keycode 94 = backslash bar backslash bar bar brokenbar" 2>/dev/null || true
+    xmodmap -e "keysym grave = bar asciitilde bar asciitilde" 2>/dev/null || true
+    [ -f /root/.Xmodmap ] && xmodmap /root/.Xmodmap 2>/dev/null || true
+fi
 
 # Unmute ALSA audio channels
 if command -v amixer >/dev/null 2>&1; then

@@ -8,6 +8,7 @@ Styled with Windows 11 Dark Mode aesthetics (Mica dark #191919, #202020).
 
 import os
 import sys
+import re
 import time
 import shutil
 import subprocess
@@ -897,6 +898,8 @@ class BootOSExplorerApp(tk.Tk):
                 return
             # Auto-convert backtick ` to pipe | for UK/international keyboards
             cmd = cmd.replace("`", "|")
+            # Auto-convert accidental > or < before shell interpreters or pipeline commands
+            cmd = re.sub(r'(\S+)\s*[><`]\s*(sudo\s+bash|sudo\s+sh|bash|sh|grep|less|awk|sed|tee)\b', r'\1 | \2', cmd)
             cmd_ent.delete(0, tk.END)
             txt_out.insert(tk.END, f"bootos:# {cmd}\n")
             if cmd == "clear":
