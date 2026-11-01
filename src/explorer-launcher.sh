@@ -84,11 +84,23 @@ python3 "$EXPLORER_SCRIPT"
 
 # Clean exit: ensure Openbox and any child processes terminate
 openbox --exit 2>/dev/null || true
-pkill -TERM -f "$EXPLORER_SCRIPT" 2>/dev/null || true
+pkill -9 -x openbox 2>/dev/null || true
+pkill -9 -f "$EXPLORER_SCRIPT" 2>/dev/null || true
+pkill -9 -x Xorg 2>/dev/null || true
 EOF
 
 echo "--> Launching BootOS File Explorer..."
 xinit /root/.xinitrc -- :0 >/tmp/xorg.log 2>&1
 
+# Bulletproof console and keyboard recovery
+pkill -9 -x openbox 2>/dev/null || true
+pkill -9 -f bootos_explorer 2>/dev/null || true
+pkill -9 -x Xorg 2>/dev/null || true
+sleep 0.2
 chvt 1 2>/dev/null || true
-clear
+kbd_mode -a -C /dev/tty1 2>/dev/null || kbd_mode -a 2>/dev/null || true
+stty -F /dev/tty1 sane 2>/dev/null || stty sane 2>/dev/null || true
+stty -F /dev/tty1 echo icanon 2>/dev/null || true
+printf "\033c\033[?25h" > /dev/tty1 2>/dev/null || true
+printf "\033c\033[?25h" 2>/dev/null || true
+clear 2>/dev/null || printf "\033[2J\033[1;1H"

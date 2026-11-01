@@ -165,7 +165,8 @@ class BootOSExplorerApp(tk.Tk):
         except Exception:
             pass
 
-        self.bind("<Escape>", lambda e: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.action_exit)
+        self.bind("<Escape>", lambda e: self.action_exit())
 
         self.setup_styles()
         self.build_ui()
@@ -300,7 +301,7 @@ class BootOSExplorerApp(tk.Tk):
         self.create_sep(cmd_bar)
         self.create_cmd_button(cmd_bar, "💻 Terminal", self.action_terminal)
         self.create_sep(cmd_bar)
-        self.create_cmd_button(cmd_bar, "❌ Exit", self.destroy)
+        self.create_cmd_button(cmd_bar, "❌ Exit", self.action_exit)
 
         # 4. Main Body: Left Sidebar + Right Content
         main_split = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=CLR_BORDER, bd=0, sashwidth=4)
@@ -818,6 +819,13 @@ class BootOSExplorerApp(tk.Tk):
         if items and items[0]["is_dir"]:
             target = items[0]["path"]
         self.run_in_terminal(target)
+
+    def action_exit(self):
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     def run_in_terminal(self, path):
         work_dir = path if os.path.isdir(path) else os.path.dirname(path)

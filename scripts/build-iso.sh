@@ -89,6 +89,9 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xprop \
     e2fsprogs \
     dosfstools \
+    kbd \
+    syslinux \
+    xorriso \
     alsa-lib \
     tar \
     bash \
@@ -182,6 +185,15 @@ cp "${WORKSPACE_DIR}/src/explorer-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/expl
 chmod +x "${ROOTFS_DIR}/usr/local/bin/explorer"
 ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/local/bin/files"
 ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/bin/explorer"
+
+# Install BootOS Portable Assets for Rufus & Recompilation
+echo "--> Bundling BootOS Portable Assets for Rufus..."
+mkdir -p "${ROOTFS_DIR}/usr/share/bootos/flasher" "${ROOTFS_DIR}/usr/share/bootos/scripts" "${ROOTFS_DIR}/usr/share/bootos/src"
+cp "${WORKSPACE_DIR}"/bootos-flasher*.exe "${ROOTFS_DIR}/usr/share/bootos/flasher/" 2>/dev/null || true
+cp "${WORKSPACE_DIR}/flash-usb.bat" "${ROOTFS_DIR}/usr/share/bootos/flasher/" 2>/dev/null || true
+cp "${WORKSPACE_DIR}/README-RUFUS.txt" "${ROOTFS_DIR}/usr/share/bootos/flasher/" 2>/dev/null || true
+cp "${WORKSPACE_DIR}/scripts/build-iso.sh" "${ROOTFS_DIR}/usr/share/bootos/scripts/" 2>/dev/null || true
+cp -r "${WORKSPACE_DIR}/src"/* "${ROOTFS_DIR}/usr/share/bootos/src/" 2>/dev/null || true
 
 # Pre-install Python 3 libraries: Pillow, FastAPI, Gradio, Rich, ABC
 echo "--> Installing requested Python 3 libraries: Pillow, FastAPI, Gradio, Rich, ABC..."
@@ -425,6 +437,10 @@ stty -F /dev/tty1 echo icanon 2>/dev/null || true
 
 # Direct attachment to active controlling terminal (TTY1)
 while true; do
+    kbd_mode -a -C /dev/tty1 2>/dev/null || true
+    stty -F /dev/tty1 sane 2>/dev/null || stty -F /dev/console sane 2>/dev/null || true
+    stty -F /dev/tty1 echo icanon 2>/dev/null || true
+    printf "\033c\033[?25h" > /dev/tty1 2>/dev/null || true
     if command -v openvt >/dev/null 2>&1 && [ -c /dev/tty1 ]; then
         openvt -c 1 -s -w -- /usr/local/bin/bootos
     elif [ -c /dev/tty1 ]; then

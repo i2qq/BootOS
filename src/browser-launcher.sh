@@ -247,7 +247,15 @@ echo "Starting graphical display and Chromium browser..."
 echo "Tip: Click the kill ([X]) or minus ([-]) buttons to return to the BootOS homescreen."
 xinit /root/.xinitrc -- :0 >/tmp/xorg.log 2>&1
 
-# Return display to main TTY console
+# Return display to main TTY console with full keyboard and terminal recovery
+pkill -9 -x chromium 2>/dev/null || true
+pkill -9 -x openbox 2>/dev/null || true
+pkill -9 -x Xorg 2>/dev/null || true
+sleep 0.2
 chvt 1 2>/dev/null || true
-echo "Chromium closed. Returning to terminal homescreen..."
-sleep 1
+kbd_mode -a -C /dev/tty1 2>/dev/null || kbd_mode -a 2>/dev/null || true
+stty -F /dev/tty1 sane 2>/dev/null || stty sane 2>/dev/null || true
+stty -F /dev/tty1 echo icanon 2>/dev/null || true
+printf "\033c\033[?25h" > /dev/tty1 2>/dev/null || true
+printf "\033c\033[?25h" 2>/dev/null || true
+clear 2>/dev/null || printf "\033[2J\033[1;1H"

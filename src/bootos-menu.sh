@@ -315,6 +315,57 @@ select_target_drive() {
     return 0
 }
 
+# Clean wipe target disk: unmounts all partitions, erases NTFS/FAT/GPT signatures, zeroes headers
+wipe_disk_partitions() {
+    target_disk="$1"
+    [ -b "$target_disk" ] || return 1
+
+    echo -e "\n${RED}${BOLD}======================================================${RESET}"
+    echo -e "${RED}${BOLD}  WIPING ALL PARTITIONS & SIGNATURES ON $target_disk${RESET}"
+    echo -e "${RED}${BOLD}======================================================${RESET}"
+    echo -e "Target disk: ${CYAN}${BOLD}$target_disk${RESET}"
+
+    # 1. Unmount all partitions and disable swap
+    echo -e "\n1. Identifying and unmounting all existing partitions (/dev/sda1, sda2, sda3)..."
+    swapoff -a 2>/dev/null || true
+    for p in $(lsblk -rnpo NAME "$target_disk" 2>/dev/null | grep -v "^${target_disk}$"); do
+        echo -e "   Unmounting $p..."
+        umount -f "$p" 2>/dev/null || true
+    done
+
+    # 2. Erase all filesystem signatures (NTFS, FAT, ext4, etc.)
+    echo "2. Erasing filesystem signatures (wipefs)..."
+    for p in $(lsblk -rnpo NAME "$target_disk" 2>/dev/null | grep -v "^${target_disk}$"); do
+        wipefs -a -f "$p" 2>/dev/null || true
+    done
+    wipefs -a -f "$target_disk" 2>/dev/null || true
+
+    # 3. Overwrite partition tables, boot sector, and NTFS headers with zeros
+    echo "3. Zeroing out MBR, partition tables, and NTFS metadata (64 MB)..."
+    dd if=/dev/zero of="$target_disk" bs=1M count=64 conv=fsync 2>/dev/null || true
+
+    # 4. Wipe secondary GPT table at the end of the disk
+    disk_bytes=$(blockdev --getsize64 "$target_disk" 2>/dev/null || cat "/sys/class/block/$(basename "$target_disk")/size" 2>/dev/null || echo 0)
+    if [ "$disk_bytes" -gt 0 ]; then
+        disk_mb=$((disk_bytes / 1048576))
+        if [ "$disk_mb" -gt 64 ]; then
+            seek_mb=$((disk_mb - 32))
+            echo "4. Zeroing backup GPT table at end of disk (${seek_mb} MB)..."
+            dd if=/dev/zero of="$target_disk" bs=1M seek="$seek_mb" count=32 conv=fsync 2>/dev/null || true
+        fi
+    fi
+
+    # 5. Inform kernel of partition table removal
+    echo "5. Updating kernel partition table..."
+    sync
+    partprobe "$target_disk" 2>/dev/null || blockdev --rereadpt "$target_disk" 2>/dev/null || true
+    mdev -s 2>/dev/null || true
+    sleep 1
+
+    echo -e "${GREEN}✔ Clean wipe complete! All old Windows 7 NTFS partitions removed.${RESET}\n"
+    return 0
+}
+
 # Helper to flash an image (file or URL) to a target block device
 flash_image_to_drive() {
     src="$1"
@@ -365,6 +416,9 @@ flash_image_to_drive() {
         read -r _
         return 1
     fi
+
+    # Clean wipe old partitions (including Windows 7 NTFS partitions) before writing
+    wipe_disk_partitions "$target"
 
     echo -e "\n${GREEN}Writing $img_name to $target...${RESET}"
     flash_err=0
@@ -1087,6 +1141,289 @@ Enter GitHub repository or release URL (e.g. ${CYAN}i2qq/BootOS${RESET}):"
     esac
 }
 
+# Terminal Console & Keyboard Restoration helper
+restore_console() {
+    pkill -9 -x chromium 2>/dev/null || true
+    pkill -9 -x openbox 2>/dev/null || true
+    pkill -9 -f bootos_explorer 2>/dev/null || true
+    pkill -9 -x Xorg 2>/dev/null || true
+    sleep 0.2
+    chvt 1 2>/dev/null || true
+    kbd_mode -a -C /dev/tty1 2>/dev/null || kbd_mode -a 2>/dev/null || true
+    stty -F /dev/tty1 sane 2>/dev/null || stty sane 2>/dev/null || true
+    stty -F /dev/tty1 echo icanon 2>/dev/null || true
+    printf "\033c\033[?25h" > /dev/tty1 2>/dev/null || true
+    printf "\033c\033[?25h" 2>/dev/null || true
+    clear 2>/dev/null || printf "\033[2J\033[1;1H"
+}
+
+# Standalone Clean Disk Wipe Menu
+clean_wipe_disk_menu() {
+    show_banner
+    echo -e "${YELLOW}=== Clean Wipe Disk & Destroy Old Windows 7 Partitions ===${RESET}\n"
+    echo -e "Erase all NTFS, FAT, ext4, MBR, and GPT partitions and filesystem signatures"
+    echo -e "so the disk is completely fresh and ready for clean installations.\n"
+
+    if ! select_target_drive; then
+        read -r _
+        return
+    fi
+    target_drive="$SELECTED_DEV"
+
+    echo -e "\n${RED}${BOLD}======================================================${RESET}"
+    echo -e "${RED}${BOLD}  DANGER: ALL PARTITIONS ON $target_drive WILL BE DESTROYED!${RESET}"
+    echo -e "${RED}${BOLD}  /dev/sda1, /dev/sda2, /dev/sda3 NTFS partitions will be erased!${RESET}"
+    echo -e "${RED}${BOLD}======================================================${RESET}"
+    echo -n "Type 'WIPE' in capital letters to erase all partitions on $target_drive: "
+    read -r confirm
+    if [ "$confirm" = "WIPE" ] || [ "$confirm" = "wipe" ]; then
+        wipe_disk_partitions "$target_drive"
+    else
+        echo -e "${YELLOW}Wipe canceled.${RESET}"
+    fi
+    echo -e "\nPress Enter to return to menu..."
+    read -r _
+}
+
+# Install BootOS directly to Internal Hard Drive / SSD
+install_bootos_to_disk() {
+    show_banner
+    echo -e "${YELLOW}=== Install BootOS to Internal Hard Drive / SSD ===${RESET}\n"
+    echo -e "Installs a bootable BootOS system directly to your PC's internal drive,"
+    echo -e "allowing your PC to boot into BootOS from HDD without any USB plugged in."
+    echo -e "Also creates a clean ${CYAN}BootOS-Portable${RESET} folder containing ${BOLD}bootos.iso${RESET},"
+    echo -e "Rufus flasher tools, and build scripts for easy USB recompilation.\n"
+
+    if ! select_target_drive; then
+        read -r _
+        return
+    fi
+    target_drive="$SELECTED_DEV"
+
+    echo -e "\n${RED}${BOLD}======================================================${RESET}"
+    echo -e "${RED}${BOLD}  WARNING: ALL DATA ON $target_drive WILL BE PERMANENTLY ERASED!${RESET}"
+    echo -e "${RED}${BOLD}  Existing Windows 7 NTFS partitions will be cleanly removed.${RESET}"
+    echo -e "${RED}${BOLD}======================================================${RESET}"
+    echo -n "Type 'YES' to wipe and install BootOS to $target_drive: "
+    read -r confirm
+    if [ "$confirm" != "YES" ]; then
+        echo "Installation canceled."
+        read -r _
+        return
+    fi
+
+    # 1. Clean wipe all old partitions
+    wipe_disk_partitions "$target_drive"
+
+    # 2. Partition target drive:
+    # Partition 1: BOOTOS (4096 MB, bootable, FAT32)
+    # Partition 2: DATA (remaining disk space, ext4)
+    echo -e "${CYAN}Creating new partition layout on $target_drive...${RESET}"
+    parted -s "$target_drive" mklabel msdos 2>/dev/null || true
+    parted -s "$target_drive" mkpart primary fat32 1MiB 4096MiB 2>/dev/null || true
+    parted -s "$target_drive" set 1 boot on 2>/dev/null || true
+    parted -s "$target_drive" mkpart primary ext4 4096MiB 100% 2>/dev/null || true
+
+    sync
+    partprobe "$target_drive" 2>/dev/null || blockdev --rereadpt "$target_drive" 2>/dev/null || true
+    mdev -s 2>/dev/null || true
+    sleep 2
+
+    # Determine partition names (e.g. /dev/sda1 or /dev/nvme0n1p1)
+    p1="${target_drive}1"
+    p2="${target_drive}2"
+    if [ ! -b "$p1" ] && [ -b "${target_drive}p1" ]; then
+        p1="${target_drive}p1"
+        p2="${target_drive}p2"
+    fi
+
+    if [ ! -b "$p1" ]; then
+        echo -e "${RED}Error: Failed to create partition on $target_drive!${RESET}"
+        read -r _
+        return 1
+    fi
+
+    echo -e "${GREEN}Formatting $p1 as FAT32 (BOOTOS)...${RESET}"
+    mkfs.vfat -F 32 -n "BOOTOS" "$p1" 2>/dev/null || true
+
+    if [ -b "$p2" ]; then
+        echo -e "${GREEN}Formatting $p2 as ext4 (BOOTOS_DATA)...${RESET}"
+        mkfs.ext4 -F -L "BOOTOS_DATA" "$p2" 2>/dev/null || true
+    fi
+
+    # 3. Mount target partition
+    mnt_boot="/tmp/bootos_target_mnt_$$"
+    mkdir -p "$mnt_boot"
+    if ! mount "$p1" "$mnt_boot" 2>/dev/null; then
+        echo -e "${RED}Error: Failed to mount $p1!${RESET}"
+        read -r _
+        return 1
+    fi
+
+    # 4. Locate kernel and initramfs from current boot media
+    echo -e "${CYAN}Copying bootable kernel & initramfs...${RESET}"
+    mkdir -p "$mnt_boot/boot" "$mnt_boot/isolinux" "$mnt_boot/syslinux" "$mnt_boot/EFI/BOOT"
+
+    k_src=""
+    i_src=""
+    for dev in $(lsblk -rnpo NAME 2>/dev/null | grep -v "^${target_drive}"); do
+        [ -b "$dev" ] || continue
+        m_tmp="/tmp/scan_boot_$$"
+        mkdir -p "$m_tmp"
+        if mount -o ro "$dev" "$m_tmp" 2>/dev/null; then
+            if [ -f "$m_tmp/boot/vmlinuz" ] && [ -f "$m_tmp/boot/initramfs.gz" ]; then
+                k_src="$m_tmp/boot/vmlinuz"
+                i_src="$m_tmp/boot/initramfs.gz"
+                echo "Found boot assets on $dev!"
+                cp "$k_src" "$mnt_boot/boot/vmlinuz"
+                cp "$i_src" "$mnt_boot/boot/initramfs.gz"
+                umount "$m_tmp" 2>/dev/null || true
+                rm -rf "$m_tmp"
+                break
+            fi
+            umount "$m_tmp" 2>/dev/null || true
+        fi
+        rm -rf "$m_tmp"
+    done
+
+    # Fallback to local /boot if present
+    if [ ! -f "$mnt_boot/boot/vmlinuz" ]; then
+        [ -f /boot/vmlinuz-lts ] && cp /boot/vmlinuz-lts "$mnt_boot/boot/vmlinuz"
+        [ -f /boot/vmlinuz ] && cp /boot/vmlinuz "$mnt_boot/boot/vmlinuz"
+    fi
+
+    # 5. Install Syslinux bootloader (for Legacy BIOS PCs like Dell OptiPlex)
+    echo -e "${CYAN}Installing Syslinux bootloader to $target_drive MBR...${RESET}"
+    mbr_bin="/usr/share/syslinux/mbr.bin"
+    [ ! -f "$mbr_bin" ] && [ -f /usr/lib/syslinux/mbr.bin ] && mbr_bin="/usr/lib/syslinux/mbr.bin"
+    if [ -f "$mbr_bin" ]; then
+        dd bs=440 count=1 conv=notrunc if="$mbr_bin" of="$target_drive" 2>/dev/null || true
+    fi
+
+    # Copy Syslinux COM32 modules
+    for d in /usr/share/syslinux /usr/lib/syslinux/modules/bios /usr/lib/syslinux; do
+        if [ -d "$d" ]; then
+            cp "$d"/ldlinux.c32 "$mnt_boot/boot/" 2>/dev/null || true
+            cp "$d"/menu.c32 "$mnt_boot/boot/" 2>/dev/null || true
+            cp "$d"/libutil.c32 "$mnt_boot/boot/" 2>/dev/null || true
+            cp "$d"/libcom32.c32 "$mnt_boot/boot/" 2>/dev/null || true
+            break
+        fi
+    done
+
+    # Write syslinux.cfg
+    cat <<'EOF' > "$mnt_boot/boot/syslinux.cfg"
+DEFAULT bootos
+PROMPT 0
+TIMEOUT 20
+
+UI menu.c32
+MENU TITLE BootOS - RAM-Resident OS
+
+LABEL bootos
+  MENU LABEL BootOS (Default - 100% RAM Resident)
+  LINUX /boot/vmlinuz
+  INITRD /boot/initramfs.gz
+  APPEND quiet console=tty1
+
+LABEL bootos_debug
+  MENU LABEL BootOS (Verbose Debug Mode)
+  LINUX /boot/vmlinuz
+  INITRD /boot/initramfs.gz
+  APPEND console=tty1 debug
+EOF
+    cp "$mnt_boot/boot/syslinux.cfg" "$mnt_boot/syslinux.cfg"
+    cp "$mnt_boot/boot/syslinux.cfg" "$mnt_boot/isolinux/syslinux.cfg" 2>/dev/null || true
+
+    # Run syslinux on partition
+    syslinux -i -d /boot "$p1" 2>/dev/null || syslinux -i "$p1" 2>/dev/null || true
+
+    # 6. Install Clean Standalone Folder for Rufus & Recompilation
+    echo -e "${CYAN}Creating clean standalone BootOS-Portable folder for Rufus...${RESET}"
+    portable_dir="$mnt_boot/BootOS-Portable"
+    mkdir -p "$portable_dir/scripts" "$portable_dir/src" "$portable_dir/tools"
+
+    # Copy Rufus & Flasher tools
+    if [ -d /usr/share/bootos/flasher ]; then
+        cp -r /usr/share/bootos/flasher/* "$portable_dir/tools/" 2>/dev/null || true
+    fi
+    # Copy build scripts & source
+    if [ -d /usr/share/bootos/scripts ]; then
+        cp -r /usr/share/bootos/scripts/* "$portable_dir/scripts/" 2>/dev/null || true
+    fi
+    if [ -d /usr/share/bootos/src ]; then
+        cp -r /usr/share/bootos/src/* "$portable_dir/src/" 2>/dev/null || true
+    fi
+
+    # Create README-RUFUS.txt
+    cat <<'EOF' > "$portable_dir/README-RUFUS.txt"
+==============================================================================
+BootOS Portable Recovery & USB Flasher Kit
+==============================================================================
+This clean, standalone folder is completely separate from the main OS install.
+It contains everything needed to recompile or burn BootOS to any USB flash
+drive using Rufus, BootOS Flasher, or dd.
+
+HOW TO FLASH WITH RUFUS (Windows):
+1. Download or open Rufus (https://rufus.ie)
+2. Insert your USB flash drive (any size >= 1 GB, e.g. 2GB, 4GB, 8GB).
+3. Device: Select your USB drive.
+4. Boot selection: Click 'SELECT' and choose 'bootos.iso'.
+5. Partition scheme: MBR
+6. Target system: BIOS (or UEFI)
+7. File system: FAT32 (Default)
+8. Click 'START'. If prompted, select 'Write in ISO Image mode (Recommended)'.
+9. BootOS is ready! Plug the USB into any PC and boot.
+
+HOW TO FLASH WITH BOOTOS FLASHER (Windows - No Rufus required):
+- Double-click 'tools/bootos-flasher-gui.exe' (or 'tools/bootos-flasher.exe').
+
+HOW TO RECOMPILE BOOTOS (Linux / WSL):
+- Run: ./scripts/build-iso.sh
+==============================================================================
+EOF
+
+    # Re-pack bootos.iso into BootOS-Portable if xorriso is available
+    if command -v xorriso >/dev/null 2>&1 && [ -f "$mnt_boot/boot/vmlinuz" ] && [ -f "$mnt_boot/boot/initramfs.gz" ]; then
+        echo -e "${CYAN}Generating bootos.iso inside BootOS-Portable for Rufus...${RESET}"
+        iso_stage="/tmp/iso_stage_$$"
+        mkdir -p "$iso_stage/boot" "$iso_stage/isolinux"
+        cp "$mnt_boot/boot/vmlinuz" "$iso_stage/boot/"
+        cp "$mnt_boot/boot/initramfs.gz" "$iso_stage/boot/"
+        cp "$mnt_boot/boot/syslinux.cfg" "$iso_stage/isolinux/isolinux.cfg"
+        xorriso -as mkisofs \
+            -o "$portable_dir/bootos.iso" \
+            -b isolinux/isolinux.cfg \
+            -c isolinux/boot.cat \
+            -no-emul-boot -boot-load-size 4 -boot-info-table \
+            "$iso_stage" >/dev/null 2>&1 || true
+        rm -rf "$iso_stage"
+    fi
+
+    # Mirror copy BootOS-Portable to second partition if present
+    if [ -b "$p2" ]; then
+        mnt_p2="/tmp/p2_mnt_$$"
+        mkdir -p "$mnt_p2"
+        if mount "$p2" "$mnt_p2" 2>/dev/null; then
+            mkdir -p "$mnt_p2/BootOS-Portable"
+            cp -r "$portable_dir"/* "$mnt_p2/BootOS-Portable/" 2>/dev/null || true
+            umount "$mnt_p2" 2>/dev/null || true
+        fi
+        rm -rf "$mnt_p2"
+    fi
+
+    sync
+    umount "$mnt_boot" 2>/dev/null || true
+    rm -rf "$mnt_boot"
+
+    echo -e "\n${GREEN}${BOLD}✔ SUCCESS! BootOS has been installed to ${target_drive}!${RESET}"
+    echo -e "You can now reboot your PC and it will boot directly into BootOS from HDD."
+    echo -e "A clean standalone ${CYAN}BootOS-Portable${RESET} folder has also been created."
+    echo -e "\nPress Enter to return..."
+    read -r _
+    return 0
+}
+
 launch_file_explorer() {
     show_banner
     echo -e "${YELLOW}=== Launch BootOS File Explorer (Native Desktop App) ===${RESET}\n"
@@ -1103,6 +1440,7 @@ launch_file_explorer() {
         echo -e "${RED}File Explorer executable not found!${RESET}"
         sleep 2
     fi
+    restore_console
 }
 
 launch_browser() {
@@ -1140,6 +1478,7 @@ launch_browser() {
         echo -e "${RED}Error: Browser launcher (/usr/local/bin/browser) not found!${RESET}"
         read -r _
     fi
+    restore_console
 }
 
 save_persistent_state() {
@@ -1323,15 +1662,17 @@ while true; do
     echo -e "  ${GREEN}[4]${RESET} Download & Boot Ubuntu (26.04 & 24.04 LTS)"
     echo -e "  ${GREEN}[5]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
     echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
-    echo -e "  ${GREEN}[7]${RESET} Download & Boot Custom Kernel/Initrd"
-    echo -e "  ${GREEN}[8]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
-    echo -e "  ${GREEN}[9]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
-    echo -e "  ${GREEN}[10]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
-    echo -e "  ${GREEN}[11]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
-    echo -e "  ${GREEN}[12]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
-    echo -e "  ${GREEN}[13]${RESET} Power Off"
+    echo -e "  ${GREEN}[7]${RESET} ${BOLD}Install BootOS to Internal Hard Drive / SSD (With Clean Rufus Kit)${RESET}"
+    echo -e "  ${GREEN}[8]${RESET} ${BOLD}Clean Wipe Disk (Erase Windows 7 NTFS /dev/sda1, sda2, sda3)${RESET}"
+    echo -e "  ${GREEN}[9]${RESET} Download & Boot Custom Kernel/Initrd"
+    echo -e "  ${GREEN}[10]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
+    echo -e "  ${GREEN}[11]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
+    echo -e "  ${GREEN}[12]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
+    echo -e "  ${GREEN}[13]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
+    echo -e "  ${GREEN}[14]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
+    echo -e "  ${GREEN}[15]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [1-13]: "
+    echo -n " Please select an option [1-15]: "
     read -r choice
 
     case "$choice" in
@@ -1341,10 +1682,12 @@ while true; do
         4) download_and_boot_ubuntu ;;
         5|"browser"|"chromium"|"web") launch_browser ;;
         6) flash_drive_utility ;;
-        7) custom_os_downloader ;;
-        8|"net"|"network") setup_network ;;
-        9) online_netboot_menu ;;
-        10|"sh"|"shell"|"bash")
+        7|"install") install_bootos_to_disk ;;
+        8|"wipe") clean_wipe_disk_menu ;;
+        9) custom_os_downloader ;;
+        10|"net"|"network") setup_network ;;
+        11) online_netboot_menu ;;
+        12|"sh"|"shell"|"bash")
             echo -e "\n${CYAN}======================================================${RESET}"
             echo -e " ${BOLD}BootOS Root Terminal Shell (GNU Bash)${RESET}"
             echo -e " Full Shell Commands: ${GREEN}sudo${RESET}, ${GREEN}echo${RESET}, ${GREEN}mkdir${RESET}, ${GREEN}touch${RESET}, ${GREEN}cat${RESET}, ${GREEN}nano${RESET}, ${GREEN}grep${RESET}"
@@ -1361,8 +1704,8 @@ while true; do
             echo -e "\nReturning to menu..."
             sleep 1
             ;;
-        11|"save"|"persist") save_persistent_state ;;
-        12|"reboot")
+        13|"save"|"persist") save_persistent_state ;;
+        14|"reboot")
             echo -e "\n${YELLOW}Preparing to reboot...${RESET}"
             save_persistent_state "auto"
             echo -e "${YELLOW}Rebooting system...${RESET}"
@@ -1370,7 +1713,7 @@ while true; do
             echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
             busybox reboot -f 2>/dev/null || reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
             ;;
-        13|"poweroff"|"shutdown")
+        15|"poweroff"|"shutdown")
             echo -e "\n${YELLOW}Shutting down...${RESET}"
             sync
             echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
