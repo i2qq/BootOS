@@ -19,8 +19,8 @@ if command -v udevd >/dev/null 2>&1; then
     fi
 fi
 
-# 3. Explicitly probe mouse, keyboard, and virtual machine input drivers
-for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse vboxguest vboxvideo vboxsf; do
+# 3. Explicitly probe input and display drivers
+for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse vboxguest vboxvideo vboxsf radeon amdgpu i915; do
     modprobe "$mod" 2>/dev/null || true
 done
 
@@ -73,18 +73,22 @@ export XCURSOR_THEME=Adwaita
 export XCURSOR_SIZE=24
 xsetroot -cursor_name left_ptr -solid "#191919" 2>/dev/null || true
 
+# Auto-detect native display resolution
+xrandr --auto 2>/dev/null || true
+
 # Start Openbox
 openbox &
 
 # Launch pure native desktop application
 python3 "$EXPLORER_SCRIPT"
 
-# Clean exit
+# Clean exit: ensure Openbox and any child processes terminate
 openbox --exit 2>/dev/null || true
+pkill -TERM -f "$EXPLORER_SCRIPT" 2>/dev/null || true
 EOF
 
 echo "--> Launching BootOS File Explorer..."
-xinit /root/.xinitrc -- :0 -novtswitch >/tmp/xorg.log 2>&1
+xinit /root/.xinitrc -- :0 >/tmp/xorg.log 2>&1
 
 chvt 1 2>/dev/null || true
 clear

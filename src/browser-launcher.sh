@@ -36,8 +36,8 @@ if command -v udevd >/dev/null 2>&1; then
     fi
 fi
 
-# 3. Explicitly probe mouse and keyboard drivers
-for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse; do
+# 3. Explicitly probe input, audio, and display drivers
+for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse snd_hda_intel snd_hda_codec_realtek snd_hda_codec_hdmi snd_hda_codec_generic radeon amdgpu i915; do
     modprobe "$mod" 2>/dev/null || true
 done
 
@@ -159,6 +159,18 @@ export XCURSOR_THEME=Adwaita
 export XCURSOR_SIZE=24
 xsetroot -cursor_name left_ptr -solid "#1e1e2e" 2>/dev/null || true
 
+# Auto-detect native display resolution via RandR
+xrandr --auto 2>/dev/null || true
+
+# Unmute ALSA audio channels
+if command -v amixer >/dev/null 2>&1; then
+    amixer sset Master 90% unmute 2>/dev/null || true
+    amixer sset PCM 90% unmute 2>/dev/null || true
+    amixer sset Speaker 90% unmute 2>/dev/null || true
+    amixer sset Headphone 90% unmute 2>/dev/null || true
+    amixer sset Front 90% unmute 2>/dev/null || true
+fi
+
 # Start lightweight window manager
 openbox &
 
@@ -222,6 +234,8 @@ exec dbus-run-session -- chromium \
     --disable-gpu-sandbox \
     --disable-dev-shm-usage \
     --disable-software-rasterizer-warning \
+    --force-device-scale-factor=1 \
+    --audio-backend=alsa \
     --no-first-run \
     --no-default-browser-check \
     --password-store=basic \
@@ -231,7 +245,7 @@ EOF
 
 echo "Starting graphical display and Chromium browser..."
 echo "Tip: Click the kill ([X]) or minus ([-]) buttons to return to the BootOS homescreen."
-xinit /root/.xinitrc -- :0 -novtswitch >/tmp/xorg.log 2>&1
+xinit /root/.xinitrc -- :0 >/tmp/xorg.log 2>&1
 
 # Return display to main TTY console
 chvt 1 2>/dev/null || true

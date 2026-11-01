@@ -44,6 +44,9 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     linux-firmware-tigon \
     linux-firmware-e100 \
     linux-firmware-ath9k_htc \
+    linux-firmware-radeon \
+    alsa-utils \
+    xrandr \
     kexec-tools \
     7zip \
     curl \
@@ -125,6 +128,7 @@ cp -r "${ROOTFS_DIR}/lib/firmware/ath"* /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/tigon" /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/bnx2"* /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/e100" /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/radeon" /tmp/fw_keep/ 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware"/*
 mv /tmp/fw_keep/* "${ROOTFS_DIR}/lib/firmware"/ 2>/dev/null || true
 rm -rf /tmp/fw_keep "${ROOTFS_DIR}/var/cache/apk"/* "${ROOTFS_DIR}/boot/initramfs"*
@@ -342,6 +346,25 @@ done
 for mod in e1000 e1000e igb igc r8169 r8152 tg3 b44 sky2 alx atl1c atl1e atl1 jme e100 asix ax88179_178a cdc_ether cdc_ncm rndis_host; do
     modprobe $mod 2>/dev/null || true
 done
+
+# Essential Audio (Intel HDA / Realtek ALC / HDMI Audio)
+for mod in snd_hda_intel snd_hda_codec_realtek snd_hda_codec_hdmi snd_hda_codec_generic; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# GPU KMS Display Drivers (Radeon/Intel/AMD native 1080p resolution)
+for mod in drm i915 radeon amdgpu bochs_drm vboxvideo virtio_gpu; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# Unmute all audio outputs by default
+if command -v amixer >/dev/null 2>&1; then
+    amixer sset Master 90% unmute 2>/dev/null || true
+    amixer sset PCM 90% unmute 2>/dev/null || true
+    amixer sset Speaker 90% unmute 2>/dev/null || true
+    amixer sset Headphone 90% unmute 2>/dev/null || true
+    amixer sset Front 90% unmute 2>/dev/null || true
+fi
 
 # Ensure loop device nodes exist in /dev
 [ -e /dev/loop-control ] || mknod /dev/loop-control c 10 237 2>/dev/null || true

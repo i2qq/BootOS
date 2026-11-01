@@ -160,6 +160,13 @@ class BootOSExplorerApp(tk.Tk):
         self.clipboard = {"action": None, "paths": []}
         self.show_hidden = False
 
+        try:
+            self.tk.call('tk', 'scaling', 1.0)
+        except Exception:
+            pass
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
         self.setup_styles()
         self.build_ui()
 
@@ -292,6 +299,8 @@ class BootOSExplorerApp(tk.Tk):
         self.create_cmd_button(cmd_bar, "🗑 Delete", self.action_delete)
         self.create_sep(cmd_bar)
         self.create_cmd_button(cmd_bar, "💻 Terminal", self.action_terminal)
+        self.create_sep(cmd_bar)
+        self.create_cmd_button(cmd_bar, "❌ Exit", self.destroy)
 
         # 4. Main Body: Left Sidebar + Right Content
         main_split = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=CLR_BORDER, bd=0, sashwidth=4)
