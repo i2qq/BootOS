@@ -334,7 +334,7 @@ done
 
 echo "--> [3/4] BootOS: Checking persistent storage..."
 PERSIST_DEV=""
-for part in $(ls /dev/sd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]*p[0-9]* /dev/vd[a-z][0-9]* 2>/dev/null); do
+for part in $(blkid -o device -t TYPE=vfat -t TYPE=ext4 2>/dev/null); do
     [ -b "$part" ] || continue
     mkdir -p /mnt/p_check
     if mount -o ro "$part" /mnt/p_check 2>/dev/null; then
@@ -365,13 +365,10 @@ export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 export HOME=/root
 
-# Switch monitor to TTY1 and attach terminal
-chvt 1 2>/dev/null || true
+# Direct attachment to active console (TTY0)
 while true; do
     if [ -c /dev/tty0 ]; then
         /usr/local/bin/bootos < /dev/tty0 > /dev/tty0 2>&1
-    elif [ -c /dev/tty1 ]; then
-        /usr/local/bin/bootos < /dev/tty1 > /dev/tty1 2>&1
     else
         /usr/local/bin/bootos < /dev/console > /dev/console 2>&1
     fi
@@ -411,12 +408,12 @@ MENU TITLE BootOS - 100% DRAM Resident
 LABEL bootos
   MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 console=tty1 init=/init
+  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 init=/init
 
 LABEL bootos_quiet
   MENU LABEL ^2. Start BootOS (Quiet Mode)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz quiet kexec_load_disabled=0 console=tty0 console=tty1 init=/init
+  APPEND initrd=/boot/initramfs.gz quiet kexec_load_disabled=0 console=tty0 init=/init
 EOF
 
 cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/isolinux/syslinux.cfg"
@@ -432,12 +429,12 @@ set default="0"
 set timeout=3
 
 menuentry "BootOS (100% DRAM Mode)" {
-    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 console=tty1 init=/init
+    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 init=/init
     initrd /boot/initramfs.gz
 }
 
 menuentry "BootOS (Quiet Mode)" {
-    linux /boot/vmlinuz quiet kexec_load_disabled=0 console=tty0 console=tty1 init=/init
+    linux /boot/vmlinuz quiet kexec_load_disabled=0 console=tty0 init=/init
     initrd /boot/initramfs.gz
 }
 EOF
