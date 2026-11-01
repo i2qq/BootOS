@@ -39,6 +39,11 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     linux-lts \
     linux-firmware-rtl_nic \
     linux-firmware-rtlwifi \
+    linux-firmware-rtw88 \
+    linux-firmware-bnx2 \
+    linux-firmware-tigon \
+    linux-firmware-e100 \
+    linux-firmware-ath9k_htc \
     kexec-tools \
     7zip \
     curl \
@@ -62,6 +67,12 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xf86-video-modesetting \
     xf86-video-vesa \
     xf86-video-fbdev \
+    xf86-video-intel \
+    xf86-video-ati \
+    xf86-video-amdgpu \
+    xf86-video-nouveau \
+    xf86-video-vmware \
+    xf86-video-qxl \
     xf86-input-libinput \
     xf86-input-evdev \
     xf86-input-vmmouse \
@@ -75,6 +86,7 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xprop \
     e2fsprogs \
     dosfstools \
+    alsa-lib \
     tar \
     bash \
     bash-completion \
@@ -102,13 +114,17 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
 # Copy kernel out to ISO boot folder
 cp "${ROOTFS_DIR}/boot"/vmlinuz-lts "${ISO_ROOT}/boot/vmlinuz"
 
-# Strip unneeded huge firmware (keep Intel/Realtek Ethernet & Wi-Fi)
+# Strip unneeded huge firmware (keep Intel/Realtek/Broadcom/Atheros Ethernet & Wi-Fi)
 echo "--> Optimizing firmware footprint to keep initramfs ultra-compact..."
 mkdir -p /tmp/fw_keep
 cp -r "${ROOTFS_DIR}/lib/firmware/intel" /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/rtl_nic" /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/rtlwifi" /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/rtw88" /tmp/fw_keep/ 2>/dev/null || true
 cp -r "${ROOTFS_DIR}/lib/firmware/ath"* /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/tigon" /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/bnx2"* /tmp/fw_keep/ 2>/dev/null || true
+cp -r "${ROOTFS_DIR}/lib/firmware/e100" /tmp/fw_keep/ 2>/dev/null || true
 rm -rf "${ROOTFS_DIR}/lib/firmware"/*
 mv /tmp/fw_keep/* "${ROOTFS_DIR}/lib/firmware"/ 2>/dev/null || true
 rm -rf /tmp/fw_keep "${ROOTFS_DIR}/var/cache/apk"/* "${ROOTFS_DIR}/boot/initramfs"*
@@ -307,8 +323,15 @@ else
     mdev -s 2>/dev/null || true
 fi
 
-# Explicitly probe essential kernel modules
-for mod in loop isofs squashfs overlay ext4 vfat fat psmouse evdev usbhid hid_generic e1000 e1000e igb igc r8169 r8152 cdc_ether drm bochs_drm; do
+# Explicitly probe essential kernel modules (Modern NVMe/SATA/USB + Legacy OptiPlex 330/390/990 & Laptops)
+for mod in \
+    loop isofs squashfs overlay ext4 vfat fat \
+    nvme nvme_core ahci libahci ata_piix pata_acpi ata_generic sata_nv sata_sil sata_via sata_sis uas usb_storage mmc_block sdhci sdhci_pci \
+    e1000 e1000e igb igc r8169 r8152 tg3 b44 sky2 alx atl1c atl1e atl1 jme e100 asix ax88179_178a cdc_ether cdc_ncm rndis_host \
+    iwlwifi rtw88_core rtw88_pci ath9k ath10k_pci \
+    i8042 atkbd psmouse evdev usbhid hid_generic hid_multitouch \
+    drm i915 radeon amdgpu nouveau bochs_drm vboxvideo virtio_gpu \
+    snd_hda_intel snd_hda_codec_realtek; do
     modprobe $mod 2>/dev/null || true
 done
 
@@ -400,18 +423,28 @@ cp /usr/lib/syslinux/modules/bios/libutil.c32 "${ISO_ROOT}/isolinux/" 2>/dev/nul
 cat <<'EOF' > "${ISO_ROOT}/isolinux/isolinux.cfg"
 DEFAULT bootos
 PROMPT 0
-TIMEOUT 20
+TIMEOUT 50
 
 UI menu.c32
-MENU TITLE BootOS - 100% DRAM Resident
+MENU TITLE BootOS - Universal Deployment (100% DRAM Resident)
 
 LABEL bootos
-  MENU LABEL ^1. Start BootOS (100% DRAM Mode - Fast Boot)
+  MENU LABEL ^1. Start BootOS (Standard - Fast Boot)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 init=/init
+  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+
+LABEL bootos_safe
+  MENU LABEL ^2. Start BootOS (Safe Graphics - nomodeset)
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initramfs.gz nomodeset vga=791 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+
+LABEL bootos_compat
+  MENU LABEL ^3. Start BootOS (Legacy Hardware Compatibility Mode)
+  KERNEL /boot/vmlinuz
+  APPEND initrd=/boot/initramfs.gz nomodeset acpi=noirq noapic pci=nomsi vga=normal kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
 
 LABEL bootos_quiet
-  MENU LABEL ^2. Start BootOS (Quiet Mode)
+  MENU LABEL ^4. Start BootOS (Quiet Mode)
   KERNEL /boot/vmlinuz
   APPEND initrd=/boot/initramfs.gz quiet kexec_load_disabled=0 console=tty0 init=/init
 EOF
@@ -426,10 +459,20 @@ cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/syslinux.cfg"
 echo "--> Setting up GRUB for UEFI boot..."
 cat <<'EOF' > "${ISO_ROOT}/boot/grub/grub.cfg"
 set default="0"
-set timeout=3
+set timeout=5
 
-menuentry "BootOS (100% DRAM Mode)" {
-    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 init=/init
+menuentry "BootOS (Standard - Fast Boot)" {
+    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+    initrd /boot/initramfs.gz
+}
+
+menuentry "BootOS (Safe Graphics Mode - nomodeset)" {
+    linux /boot/vmlinuz nomodeset kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+    initrd /boot/initramfs.gz
+}
+
+menuentry "BootOS (Legacy Hardware Compatibility Mode)" {
+    linux /boot/vmlinuz nomodeset acpi=noirq noapic pci=nomsi kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
     initrd /boot/initramfs.gz
 }
 

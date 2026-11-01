@@ -88,15 +88,16 @@ show_banner() {
 
 setup_network() {
     echo -e "\n${YELLOW}=== Network Hardware Scanning & Configuration ===${RESET}\n"
-    depmod -a 2>/dev/null || true
 
     echo "1. Probing network card drivers..."
-    for mod in e1000 e1000e igb igc virtio_net vmxnet3 r8169 r8152 cdc_ether ax88179_178a asix pcnet32 tg3 b44 forcedeth 8139too 8139cp atlantic sky2 alx hv_netvsc iwlwifi iwlmvm mt7921e mt7921u rtw88_8821ce rtw88_8822ce rtw89_8852ae rtw89_8852be; do
+    for mod in e1000 e1000e igb igc virtio_net vmxnet3 r8169 r8152 cdc_ether cdc_ncm rndis_host ax88179_178a asix pcnet32 tg3 b44 forcedeth 8139too 8139cp atlantic sky2 alx atl1 atl1c atl1e jme e100 hv_netvsc iwlwifi iwlmvm mt7921e mt7921u rtw88_8821ce rtw88_8822ce rtw89_8852ae rtw89_8852be; do
         modprobe "$mod" 2>/dev/null || true
     done
 
-    # Probe PCI modaliases
-    find /sys -name modalias -exec cat {} + 2>/dev/null | xargs -n1 modprobe 2>/dev/null || true
+    # Trigger udev for any remaining network devices cleanly and asynchronously
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm trigger --subsystem-match=net 2>/dev/null || true
+    fi
     sleep 1
 
     echo "2. Detecting network interfaces..."
@@ -271,7 +272,7 @@ select_target_drive() {
     lsblk -d -n -p -o NAME,SIZE,MODEL,TYPE 2>/dev/null | grep -E "disk" | awk '{print $1 "|" $2 " " $3 " " $4}' > "$drives_file" 2>/dev/null || true
 
     if [ ! -s "$drives_file" ]; then
-        for d in /sys/block/sd* /sys/block/nvme* /sys/block/vd*; do
+        for d in /sys/block/sd* /sys/block/nvme* /sys/block/vd* /sys/block/hd* /sys/block/mmcblk*; do
             [ -e "$d" ] || continue
             dev_name="/dev/$(basename "$d")"
             if [ -b "$dev_name" ]; then
