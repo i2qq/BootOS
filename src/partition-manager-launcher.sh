@@ -1,0 +1,89 @@
+#!/bin/sh
+# ==============================================================================
+# BootOS Partition Wizard & Volume Manager Desktop Launcher
+# ==============================================================================
+export DISPLAY="${DISPLAY:-:0}"
+mkdir -p /tmp/.X11-unix /run/user/0 /run/udev /root/.config/openbox /var/log /etc/X11/xorg.conf.d
+chmod 1777 /tmp/.X11-unix
+chmod 700 /run/user/0
+export XDG_RUNTIME_DIR=/run/user/0
+
+# Explicitly probe input and display drivers
+for mod in psmouse mousedev evdev i8042 usbhid hid_generic vmmouse radeon amdgpu i915; do
+    modprobe "$mod" 2>/dev/null || true
+done
+
+PM_SCRIPT="/usr/local/bin/bootos_partition_manager.py"
+if [ ! -f "$PM_SCRIPT" ] && [ -f "$(dirname "$0")/bootos_partition_manager.py" ]; then
+    PM_SCRIPT="$(cd "$(dirname "$0")" && pwd)/bootos_partition_manager.py"
+fi
+
+# 1. If Xorg already active, launch GUI directly
+if pgrep -x Xorg >/dev/null 2>&1; then
+    exec python3 "$PM_SCRIPT" "$@"
+fi
+
+# 2. If Xorg not active, start with Openbox
+cat <<'EOF' > /root/.config/openbox/rc.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <theme>
+    <titleLayout>NLIMC</titleLayout>
+  </theme>
+  <mouse>
+    <dragThreshold>1</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <context name="Close">
+      <mousebind button="Left" action="Click">
+        <action name="Close"/>
+      </mousebind>
+    </context>
+  </mouse>
+  <keyboard>
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+  </keyboard>
+  <applications>
+    <application class="*">
+      <maximized>true</maximized>
+      <decor>yes</decor>
+    </application>
+  </applications>
+</openbox_config>
+EOF
+
+cat <<EOF > /root/.xinitrc
+export XCURSOR_THEME=Adwaita
+export XCURSOR_SIZE=24
+xsetroot -cursor_name left_ptr -solid "#191919" 2>/dev/null || true
+xrandr --auto 2>/dev/null || true
+
+# Start Openbox
+openbox &
+
+# Launch Partition Wizard & Volume Manager
+python3 "$PM_SCRIPT"
+
+# Clean exit
+openbox --exit 2>/dev/null || true
+pkill -9 -x openbox 2>/dev/null || true
+pkill -9 -f "$PM_SCRIPT" 2>/dev/null || true
+pkill -9 -x Xorg 2>/dev/null || true
+EOF
+
+echo "--> Launching BootOS Partition Wizard & Volume Manager..."
+xinit /root/.xinitrc -- :0 >/tmp/xorg.log 2>&1
+
+# Bulletproof console and keyboard recovery
+pkill -9 -x openbox 2>/dev/null || true
+pkill -9 -f bootos_partition_manager 2>/dev/null || true
+pkill -9 -x Xorg 2>/dev/null || true
+sleep 0.2
+chvt 1 2>/dev/null || true
+kbd_mode -a -C /dev/tty1 2>/dev/null || kbd_mode -a 2>/dev/null || true
+stty -F /dev/tty1 sane 2>/dev/null || stty sane 2>/dev/null || true
+stty -F /dev/tty1 echo icanon 2>/dev/null || true
+printf "\033c\033[?25h" > /dev/tty1 2>/dev/null || true
+printf "\033c\033[?25h" 2>/dev/null || true
+clear 2>/dev/null || printf "\033[2J\033[1;1H"

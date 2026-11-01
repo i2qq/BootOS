@@ -301,6 +301,8 @@ class BootOSExplorerApp(tk.Tk):
         self.create_sep(cmd_bar)
         self.create_cmd_button(cmd_bar, "💻 Terminal", self.action_terminal)
         self.create_sep(cmd_bar)
+        self.create_cmd_button(cmd_bar, "🪄 Partitions", self.action_partition_manager)
+        self.create_sep(cmd_bar)
         self.create_cmd_button(cmd_bar, "❌ Exit", self.action_exit)
 
         # 4. Main Body: Left Sidebar + Right Content
@@ -820,6 +822,22 @@ class BootOSExplorerApp(tk.Tk):
             target = items[0]["path"]
         self.run_in_terminal(target)
 
+    def action_partition_manager(self):
+        try:
+            pm_script = "/usr/local/bin/bootos_partition_manager.py"
+            if not os.path.exists(pm_script):
+                pm_script = os.path.join(os.path.dirname(__file__), "bootos_partition_manager.py")
+            if os.path.exists(pm_script):
+                subprocess.Popen(["python3", pm_script])
+            elif shutil.which("partition-wizard"):
+                subprocess.Popen(["partition-wizard"])
+            elif shutil.which("gparted"):
+                subprocess.Popen(["gparted"])
+            else:
+                messagebox.showerror("Error", "Partition Manager executable not found!")
+        except Exception as e:
+            messagebox.showerror("Partition Manager Error", str(e))
+
     def action_exit(self):
         try:
             self.destroy()
@@ -829,13 +847,70 @@ class BootOSExplorerApp(tk.Tk):
 
     def run_in_terminal(self, path):
         work_dir = path if os.path.isdir(path) else os.path.dirname(path)
+        if not os.path.exists(work_dir):
+            work_dir = "/"
         try:
             if os.name == 'nt':
                 subprocess.Popen(f'start cmd /k "cd /d {work_dir}"', shell=True)
             else:
-                subprocess.Popen(["xterm", "-e", f'cd "{work_dir}" && bash'])
+                # Try finding an installed terminal emulator
+                terms = [
+                    ["xterm", "-bg", "#1e1e1e", "-fg", "#ffffff", "-fa", "DejaVu Sans Mono", "-fs", "10", "-e", f'cd "{work_dir}" && exec bash'],
+                    ["xterm", "-e", f'cd "{work_dir}" && exec bash'],
+                    ["rxvt", "-e", f'cd "{work_dir}" && exec bash'],
+                    ["urxvt", "-e", f'cd "{work_dir}" && exec bash'],
+                ]
+                launched = False
+                for t in terms:
+                    if shutil.which(t[0]):
+                        subprocess.Popen(t)
+                        launched = True
+                        break
+                if not launched:
+                    self.open_embedded_terminal(work_dir)
         except Exception as e:
             messagebox.showerror("Terminal Error", str(e))
+
+    def open_embedded_terminal(self, work_dir):
+        term_win = tk.Toplevel(self)
+        term_win.title(f"BootOS Quick Terminal - {work_dir}")
+        term_win.geometry("700x420")
+        term_win.configure(bg="#121212")
+
+        txt_out = tk.Text(term_win, bg="#121212", fg="#00ff66", insertbackground="#fff",
+                          font=("Courier New", 10), bd=0, padx=8, pady=8)
+        txt_out.pack(fill=tk.BOTH, expand=True)
+        txt_out.insert(tk.END, f"=== BootOS Embedded Terminal Shell ===\nDirectory: {work_dir}\nType commands below and press Enter:\n\n")
+
+        prompt_frame = tk.Frame(term_win, bg="#1e1e1e", height=32)
+        prompt_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        tk.Label(prompt_frame, text="bootos:#", bg="#1e1e1e", fg="#00bcff", font=("Courier New", 10, "bold")).pack(side=tk.LEFT, padx=(8, 2))
+        cmd_ent = tk.Entry(prompt_frame, bg="#1e1e1e", fg="#ffffff", insertbackground="#fff",
+                           font=("Courier New", 10), bd=0)
+        cmd_ent.pack(fill=tk.X, side=tk.LEFT, expand=True, padx=4, pady=4)
+        cmd_ent.focus_set()
+
+        def run_cmd(event):
+            cmd = cmd_ent.get().strip()
+            if not cmd:
+                return
+            cmd_ent.delete(0, tk.END)
+            txt_out.insert(tk.END, f"bootos:# {cmd}\n")
+            if cmd == "clear":
+                txt_out.delete("1.0", tk.END)
+                return
+            try:
+                res = subprocess.run(cmd, shell=True, cwd=work_dir, capture_output=True, text=True, timeout=30)
+                if res.stdout:
+                    txt_out.insert(tk.END, res.stdout)
+                if res.stderr:
+                    txt_out.insert(tk.END, res.stderr)
+            except Exception as ex:
+                txt_out.insert(tk.END, f"Error: {ex}\n")
+            txt_out.see(tk.END)
+
+        cmd_ent.bind("<Return>", run_cmd)
 
     # =========================================================================
     # Built-in Notepad Editor

@@ -89,6 +89,9 @@ chroot "${ROOTFS_DIR}" /bin/sh -c "
     xprop \
     e2fsprogs \
     dosfstools \
+    ntfs-3g \
+    xterm \
+    gparted \
     kbd \
     syslinux \
     xorriso \
@@ -185,6 +188,16 @@ cp "${WORKSPACE_DIR}/src/explorer-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/expl
 chmod +x "${ROOTFS_DIR}/usr/local/bin/explorer"
 ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/local/bin/files"
 ln -sf /usr/local/bin/explorer "${ROOTFS_DIR}/usr/bin/explorer"
+
+# Install BootOS Native Partition Wizard & Volume Manager
+echo "--> Installing BootOS Partition Wizard & Volume Manager..."
+cp "${WORKSPACE_DIR}/src/bootos_partition_manager.py" "${ROOTFS_DIR}/usr/local/bin/bootos_partition_manager.py"
+chmod +x "${ROOTFS_DIR}/usr/local/bin/bootos_partition_manager.py"
+cp "${WORKSPACE_DIR}/src/partition-manager-launcher.sh" "${ROOTFS_DIR}/usr/local/bin/partition-wizard"
+chmod +x "${ROOTFS_DIR}/usr/local/bin/partition-wizard"
+ln -sf /usr/local/bin/partition-wizard "${ROOTFS_DIR}/usr/local/bin/partition-manager"
+ln -sf /usr/local/bin/partition-wizard "${ROOTFS_DIR}/usr/local/bin/disks"
+ln -sf /usr/local/bin/partition-wizard "${ROOTFS_DIR}/usr/local/bin/partman"
 
 # Install BootOS Portable Assets for Rufus & Recompilation
 echo "--> Bundling BootOS Portable Assets for Rufus..."

@@ -1424,6 +1424,29 @@ EOF
     return 0
 }
 
+launch_partition_manager() {
+    show_banner
+    echo -e "${YELLOW}=== Launch BootOS Partition Wizard & Volume Manager (GUI) ===${RESET}\n"
+    echo -e "${GREEN}Starting Graphical Partition & Volume Manager...${RESET}"
+    echo "Tip: Visual disk block map, 1-click Windows 7 wiping, format, create & delete partitions."
+    echo "Click Close ([X]) or press Alt+F4 to return to BootOS."
+    sleep 0.5
+
+    if [ -x /usr/local/bin/partition-wizard ]; then
+        /usr/local/bin/partition-wizard
+    elif [ -x /usr/local/bin/partition-manager ]; then
+        /usr/local/bin/partition-manager
+    elif [ -f /usr/local/bin/bootos_partition_manager.py ]; then
+        python3 /usr/local/bin/bootos_partition_manager.py
+    elif command -v gparted >/dev/null 2>&1; then
+        gparted
+    else
+        echo -e "${RED}Partition Manager executable not found!${RESET}"
+        sleep 2
+    fi
+    restore_console
+}
+
 launch_file_explorer() {
     show_banner
     echo -e "${YELLOW}=== Launch BootOS File Explorer (Native Desktop App) ===${RESET}\n"
@@ -1658,36 +1681,38 @@ while true; do
     echo -e " ${BOLD}Main Menu:${RESET}"
     echo -e "  ${GREEN}[1]${RESET} ${BOLD}Install / Boot OS from GitHub Release ISO${RESET}"
     echo -e "  ${GREEN}[2]${RESET} ${BOLD}Launch BootOS File Explorer (GUI)${RESET}"
-    echo -e "  ${GREEN}[3]${RESET} Download & Boot Lubuntu (26.04 & 24.04 LTS)"
-    echo -e "  ${GREEN}[4]${RESET} Download & Boot Ubuntu (26.04 & 24.04 LTS)"
-    echo -e "  ${GREEN}[5]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
-    echo -e "  ${GREEN}[6]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
-    echo -e "  ${GREEN}[7]${RESET} ${BOLD}Install BootOS to Internal Hard Drive / SSD (With Clean Rufus Kit)${RESET}"
-    echo -e "  ${GREEN}[8]${RESET} ${BOLD}Clean Wipe Disk (Erase Windows 7 NTFS /dev/sda1, sda2, sda3)${RESET}"
-    echo -e "  ${GREEN}[9]${RESET} Download & Boot Custom Kernel/Initrd"
-    echo -e "  ${GREEN}[10]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
-    echo -e "  ${GREEN}[11]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
-    echo -e "  ${GREEN}[12]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
-    echo -e "  ${GREEN}[13]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
-    echo -e "  ${GREEN}[14]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
-    echo -e "  ${GREEN}[15]${RESET} Power Off"
+    echo -e "  ${GREEN}[3]${RESET} ${BOLD}Launch Partition Wizard & Volume Manager (GUI)${RESET}"
+    echo -e "  ${GREEN}[4]${RESET} Download & Boot Lubuntu (26.04 & 24.04 LTS)"
+    echo -e "  ${GREEN}[5]${RESET} Download & Boot Ubuntu (26.04 & 24.04 LTS)"
+    echo -e "  ${GREEN}[6]${RESET} ${BOLD}Launch Chromium Web Browser (GUI)${RESET}"
+    echo -e "  ${GREEN}[7]${RESET} Flash Downloaded ISO to Internal Hard Drive / SSD"
+    echo -e "  ${GREEN}[8]${RESET} ${BOLD}Install BootOS to Internal Hard Drive / SSD (With Clean Rufus Kit)${RESET}"
+    echo -e "  ${GREEN}[9]${RESET} ${BOLD}Clean Wipe Disk (Erase Windows 7 NTFS /dev/sda1, sda2, sda3)${RESET}"
+    echo -e "  ${GREEN}[10]${RESET} Download & Boot Custom Kernel/Initrd"
+    echo -e "  ${GREEN}[11]${RESET} Setup Network (Ethernet DHCP / Diagnostics)"
+    echo -e "  ${GREEN}[12]${RESET} Online OS Netboot Installers (Debian / Alpine / Ubuntu in DRAM)"
+    echo -e "  ${GREEN}[13]${RESET} ${BOLD}Open Root Terminal Shell (GNU Bash, sudo, Coreutils)${RESET}"
+    echo -e "  ${GREEN}[14]${RESET} ${BOLD}Save Persistent State to Storage Drive${RESET}"
+    echo -e "  ${GREEN}[15]${RESET} ${BOLD}Reboot System (Auto-Saves to Disk)${RESET}"
+    echo -e "  ${GREEN}[16]${RESET} Power Off"
     echo ""
-    echo -n " Please select an option [1-15]: "
+    echo -n " Please select an option [1-16]: "
     read -r choice
 
     case "$choice" in
         1|"0"|"gh"|"github") github_release_os_installer ;;
         2|"explorer"|"files") launch_file_explorer ;;
-        3) download_and_boot_lubuntu ;;
-        4) download_and_boot_ubuntu ;;
-        5|"browser"|"chromium"|"web") launch_browser ;;
-        6) flash_drive_utility ;;
-        7|"install") install_bootos_to_disk ;;
-        8|"wipe") clean_wipe_disk_menu ;;
-        9) custom_os_downloader ;;
-        10|"net"|"network") setup_network ;;
-        11) online_netboot_menu ;;
-        12|"sh"|"shell"|"bash")
+        3|"part"|"disks"|"partman"|"wizard") launch_partition_manager ;;
+        4) download_and_boot_lubuntu ;;
+        5) download_and_boot_ubuntu ;;
+        6|"browser"|"chromium"|"web") launch_browser ;;
+        7) flash_drive_utility ;;
+        8|"install") install_bootos_to_disk ;;
+        9|"wipe") clean_wipe_disk_menu ;;
+        10) custom_os_downloader ;;
+        11|"net"|"network") setup_network ;;
+        12) online_netboot_menu ;;
+        13|"sh"|"shell"|"bash")
             echo -e "\n${CYAN}======================================================${RESET}"
             echo -e " ${BOLD}BootOS Root Terminal Shell (GNU Bash)${RESET}"
             echo -e " Full Shell Commands: ${GREEN}sudo${RESET}, ${GREEN}echo${RESET}, ${GREEN}mkdir${RESET}, ${GREEN}touch${RESET}, ${GREEN}cat${RESET}, ${GREEN}nano${RESET}, ${GREEN}grep${RESET}"
@@ -1704,8 +1729,8 @@ while true; do
             echo -e "\nReturning to menu..."
             sleep 1
             ;;
-        13|"save"|"persist") save_persistent_state ;;
-        14|"reboot")
+        14|"save"|"persist") save_persistent_state ;;
+        15|"reboot")
             echo -e "\n${YELLOW}Preparing to reboot...${RESET}"
             save_persistent_state "auto"
             echo -e "${YELLOW}Rebooting system...${RESET}"
@@ -1713,7 +1738,7 @@ while true; do
             echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
             busybox reboot -f 2>/dev/null || reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
             ;;
-        15|"poweroff"|"shutdown")
+        16|"poweroff"|"shutdown")
             echo -e "\n${YELLOW}Shutting down...${RESET}"
             sync
             echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
