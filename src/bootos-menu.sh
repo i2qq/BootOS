@@ -14,6 +14,8 @@ RESET="\033[0m"
 
 [ -z "$TERM" ] || [ "$TERM" = "linux" ] && export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
+stty sane 2>/dev/null || true
+stty echo icanon 2>/dev/null || true
 printf "\033[2J\033[1;1H"
 
 get_ram_info() {

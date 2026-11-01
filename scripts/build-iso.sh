@@ -319,19 +319,27 @@ echo "--> [1/4] BootOS: Initializing kernel filesystems & devices..."
 echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
 mdev -s 2>/dev/null || true
 
-echo "--> [2/4] BootOS: Loading hardware drivers..."
-# Essential Storage (NVMe, SATA AHCI, IDE, USB, Card Readers)
-for mod in loop isofs squashfs overlay ext4 vfat fat nvme nvme_core ahci libahci ata_piix pata_acpi ata_generic sata_nv sata_sil sata_via sata_sis uas usb_storage mmc_block sdhci sdhci_pci; do
+echo "--> [2/4] BootOS: Loading hardware & USB drivers..."
+# USB Host Controllers & Bus (Essential for USB Keyboards & Drives)
+for mod in usbcore xhci-pci xhci-hcd ehci-pci ehci-hcd uhci-hcd ohci-pci ohci-hcd usb-storage uas; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# Essential Input & HID (Keyboards, Mice, Touchpads)
+for mod in hid hid-generic usbhid evdev i8042 atkbd psmouse hid-multitouch; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# Re-run mdev to populate newly detected USB keyboard / input device nodes
+mdev -s 2>/dev/null || true
+
+# Essential Storage (NVMe, SATA AHCI, IDE, Card Readers)
+for mod in loop isofs squashfs overlay ext4 vfat fat nvme nvme_core ahci libahci ata_piix pata_acpi ata_generic sata_nv sata_sil sata_via sata_sis mmc_block sdhci sdhci_pci; do
     modprobe $mod 2>/dev/null || true
 done
 
 # Essential Networking (Intel, Realtek, Broadcom, Marvell, Atheros, JMicron, USB dongles & tethering)
 for mod in e1000 e1000e igb igc r8169 r8152 tg3 b44 sky2 alx atl1c atl1e atl1 jme e100 asix ax88179_178a cdc_ether cdc_ncm rndis_host; do
-    modprobe $mod 2>/dev/null || true
-done
-
-# Essential Input (Keyboards, Mice, Touchpads)
-for mod in i8042 atkbd psmouse evdev usbhid hid_generic hid_multitouch; do
     modprobe $mod 2>/dev/null || true
 done
 
@@ -388,14 +396,18 @@ export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 export HOME=/root
 
+# Configure console terminal settings
+stty -F /dev/tty1 sane 2>/dev/null || stty -F /dev/console sane 2>/dev/null || true
+stty -F /dev/tty1 echo icanon 2>/dev/null || true
+
 # Direct attachment to active controlling terminal (TTY1)
 while true; do
-    if [ -c /dev/tty1 ]; then
-        setsid /bin/sh -c 'exec /usr/local/bin/bootos <> /dev/tty1 >&0 2>&1'
-    elif [ -c /dev/console ]; then
-        setsid /bin/sh -c 'exec /usr/local/bin/bootos <> /dev/console >&0 2>&1'
+    if command -v openvt >/dev/null 2>&1 && [ -c /dev/tty1 ]; then
+        openvt -c 1 -s -w -- /usr/local/bin/bootos
+    elif [ -c /dev/tty1 ]; then
+        setsid -c -w /usr/local/bin/bootos < /dev/tty1 > /dev/tty1 2>&1
     else
-        /usr/local/bin/bootos
+        /usr/local/bin/bootos < /dev/console > /dev/console 2>&1
     fi
     sleep 1
 done
