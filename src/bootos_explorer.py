@@ -895,6 +895,8 @@ class BootOSExplorerApp(tk.Tk):
             cmd = cmd_ent.get().strip()
             if not cmd:
                 return
+            # Auto-convert backtick ` to pipe | for UK/international keyboards
+            cmd = cmd.replace("`", "|")
             cmd_ent.delete(0, tk.END)
             txt_out.insert(tk.END, f"bootos:# {cmd}\n")
             if cmd == "clear":
@@ -910,7 +912,12 @@ class BootOSExplorerApp(tk.Tk):
                 txt_out.insert(tk.END, f"Error: {ex}\n")
             txt_out.see(tk.END)
 
+        def on_key_grave(event):
+            cmd_ent.insert(tk.INSERT, "|")
+            return "break"
+
         cmd_ent.bind("<Return>", run_cmd)
+        cmd_ent.bind("<grave>", on_key_grave)
 
     # =========================================================================
     # Built-in Notepad Editor

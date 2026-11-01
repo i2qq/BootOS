@@ -76,6 +76,10 @@ xsetroot -cursor_name left_ptr -solid "#191919" 2>/dev/null || true
 # Auto-detect native display resolution
 xrandr --auto 2>/dev/null || true
 
+# Map backtick key to pipe | for UK/international keyboards
+xmodmap -e "keysym grave = bar asciitilde bar asciitilde" 2>/dev/null || true
+xmodmap -e "keycode 94 = backslash bar" 2>/dev/null || true
+
 # Start Openbox
 openbox &
 

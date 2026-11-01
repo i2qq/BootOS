@@ -259,10 +259,22 @@ alias menu='/usr/local/bin/bootos'
 alias explorer='/usr/local/bin/explorer'
 alias files='/usr/local/bin/explorer'
 
+# Auto-map backtick to pipe for UK/international keyboards (wget ... | bash)
+bind '"`": "|"' 2>/dev/null || true
+
 # Source bash completion if available
 [ -f /usr/share/bash-completion/bash_completion ] && . /usr/share/bash-completion/bash_completion 2>/dev/null
 EOF
 cp "${ROOTFS_DIR}/root/.bashrc" "${ROOTFS_DIR}/etc/bash/bashrc"
+
+# Configure Readline (/etc/inputrc and /root/.inputrc)
+cat <<'EOF' > "${ROOTFS_DIR}/etc/inputrc"
+set input-meta on
+set output-meta on
+set convert-meta off
+"`": "|"
+EOF
+cp "${ROOTFS_DIR}/etc/inputrc" "${ROOTFS_DIR}/root/.inputrc"
 
 # Configure inittab
 cat <<'EOF' > "${ROOTFS_DIR}/etc/inittab"
@@ -361,6 +373,14 @@ done
 
 # Re-run mdev to populate newly detected USB keyboard / input device nodes
 mdev -s 2>/dev/null || true
+
+# Map backtick key to pipe | for UK/international keyboards
+if command -v loadkeys >/dev/null 2>&1; then
+    loadkeys - <<'KBD_EOF' 2>/dev/null || true
+keycode 41 = bar asciitilde
+keycode 86 = backslash bar
+KBD_EOF
+fi
 
 # Essential Storage (NVMe, SATA AHCI, IDE, Card Readers)
 for mod in loop isofs squashfs overlay ext4 vfat fat nvme nvme_core ahci libahci ata_piix pata_acpi ata_generic sata_nv sata_sil sata_via sata_sis mmc_block sdhci sdhci_pci; do
