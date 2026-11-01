@@ -441,9 +441,7 @@ while true; do
     stty -F /dev/tty1 sane 2>/dev/null || stty -F /dev/console sane 2>/dev/null || true
     stty -F /dev/tty1 echo icanon 2>/dev/null || true
     printf "\033c\033[?25h" > /dev/tty1 2>/dev/null || true
-    if command -v openvt >/dev/null 2>&1 && [ -c /dev/tty1 ]; then
-        openvt -c 1 -s -w -- /usr/local/bin/bootos
-    elif [ -c /dev/tty1 ]; then
+    if [ -c /dev/tty1 ]; then
         setsid -c -w /usr/local/bin/bootos < /dev/tty1 > /dev/tty1 2>&1
     else
         /usr/local/bin/bootos < /dev/console > /dev/console 2>&1
