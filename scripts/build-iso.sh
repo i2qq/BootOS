@@ -302,36 +302,36 @@ cat <<'EOF' > "${ROOTFS_DIR}/init"
 #!/bin/sh
 trap 'sync; echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; busybox reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger' TERM INT QUIT
 
-echo "--> [1/4] BootOS: Mounting kernel filesystems..."
 mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev
 mount -t tmpfs none /tmp
 mount -t tmpfs none /run
 
+# Suppress kernel printk spam onto console so user UI stays clean
+echo 1 > /proc/sys/kernel/printk 2>/dev/null || true
+
 # Enable kexec in Alpine kernel
 echo 0 > /proc/sys/kernel/kexec_load_disabled 2>/dev/null || true
 
-echo "--> [2/4] BootOS: Initializing hardware & network..."
-# Start eudev daemon for dynamic device detection and hotplug
-mkdir -p /run/udev
-if command -v udevd >/dev/null 2>&1; then
-    udevd --daemon 2>/dev/null || true
-    udevadm trigger --action=add 2>/dev/null || true
-else
-    echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
-    mdev -s 2>/dev/null || true
-fi
+echo "--> [1/4] BootOS: Initializing kernel filesystems & devices..."
+# Fast device population via mdev
+echo /sbin/mdev > /proc/sys/kernel/hotplug 2>/dev/null || true
+mdev -s 2>/dev/null || true
 
-# Explicitly probe essential kernel modules (Modern NVMe/SATA/USB + Legacy OptiPlex 330/390/990 & Laptops)
-for mod in \
-    loop isofs squashfs overlay ext4 vfat fat \
-    nvme nvme_core ahci libahci ata_piix pata_acpi ata_generic sata_nv sata_sil sata_via sata_sis uas usb_storage mmc_block sdhci sdhci_pci \
-    e1000 e1000e igb igc r8169 r8152 tg3 b44 sky2 alx atl1c atl1e atl1 jme e100 asix ax88179_178a cdc_ether cdc_ncm rndis_host \
-    iwlwifi rtw88_core rtw88_pci ath9k ath10k_pci \
-    i8042 atkbd psmouse evdev usbhid hid_generic hid_multitouch \
-    drm i915 radeon amdgpu nouveau bochs_drm vboxvideo virtio_gpu \
-    snd_hda_intel snd_hda_codec_realtek; do
+echo "--> [2/4] BootOS: Loading hardware drivers..."
+# Essential Storage (NVMe, SATA AHCI, IDE, USB, Card Readers)
+for mod in loop isofs squashfs overlay ext4 vfat fat nvme nvme_core ahci libahci ata_piix pata_acpi ata_generic sata_nv sata_sil sata_via sata_sis uas usb_storage mmc_block sdhci sdhci_pci; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# Essential Networking (Intel, Realtek, Broadcom, Marvell, Atheros, JMicron, USB dongles & tethering)
+for mod in e1000 e1000e igb igc r8169 r8152 tg3 b44 sky2 alx atl1c atl1e atl1 jme e100 asix ax88179_178a cdc_ether cdc_ncm rndis_host; do
+    modprobe $mod 2>/dev/null || true
+done
+
+# Essential Input (Keyboards, Mice, Touchpads)
+for mod in i8042 atkbd psmouse evdev usbhid hid_generic hid_multitouch; do
     modprobe $mod 2>/dev/null || true
 done
 
@@ -357,7 +357,7 @@ done
 
 echo "--> [3/4] BootOS: Checking persistent storage..."
 PERSIST_DEV=""
-for part in $(blkid -o device -t TYPE=vfat -t TYPE=ext4 2>/dev/null); do
+for part in $(blkid -o device -t TYPE=vfat -t TYPE=ext4 2>/dev/null | grep -v '^/dev/sr'); do
     [ -b "$part" ] || continue
     mkdir -p /mnt/p_check
     if mount -o ro "$part" /mnt/p_check 2>/dev/null; then
@@ -388,12 +388,14 @@ export TERM=vt100
 export TERMINFO_DIRS=/usr/share/terminfo:/etc/terminfo:/lib/terminfo
 export HOME=/root
 
-# Direct attachment to active console (TTY0)
+# Direct attachment to active controlling terminal (TTY1)
 while true; do
-    if [ -c /dev/tty0 ]; then
-        /usr/local/bin/bootos < /dev/tty0 > /dev/tty0 2>&1
+    if [ -c /dev/tty1 ]; then
+        setsid /bin/sh -c 'exec /usr/local/bin/bootos <> /dev/tty1 >&0 2>&1'
+    elif [ -c /dev/console ]; then
+        setsid /bin/sh -c 'exec /usr/local/bin/bootos <> /dev/console >&0 2>&1'
     else
-        /usr/local/bin/bootos < /dev/console > /dev/console 2>&1
+        /usr/local/bin/bootos
     fi
     sleep 1
 done
@@ -431,22 +433,22 @@ MENU TITLE BootOS - Universal Deployment (100% DRAM Resident)
 LABEL bootos
   MENU LABEL ^1. Start BootOS (Standard - Fast Boot)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+  APPEND initrd=/boot/initramfs.gz quiet loglevel=3 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
 
 LABEL bootos_safe
   MENU LABEL ^2. Start BootOS (Safe Graphics - nomodeset)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz nomodeset vga=791 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+  APPEND initrd=/boot/initramfs.gz nomodeset vga=791 quiet loglevel=3 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
 
 LABEL bootos_compat
   MENU LABEL ^3. Start BootOS (Legacy Hardware Compatibility Mode)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz nomodeset acpi=noirq noapic pci=nomsi vga=normal kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+  APPEND initrd=/boot/initramfs.gz nomodeset vga=normal quiet loglevel=3 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
 
-LABEL bootos_quiet
-  MENU LABEL ^4. Start BootOS (Quiet Mode)
+LABEL bootos_debug
+  MENU LABEL ^4. Start BootOS (Verbose Debug Mode)
   KERNEL /boot/vmlinuz
-  APPEND initrd=/boot/initramfs.gz quiet kexec_load_disabled=0 console=tty0 init=/init
+  APPEND initrd=/boot/initramfs.gz kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
 EOF
 
 cp "${ISO_ROOT}/isolinux/isolinux.cfg" "${ISO_ROOT}/isolinux/syslinux.cfg"
@@ -462,22 +464,22 @@ set default="0"
 set timeout=5
 
 menuentry "BootOS (Standard - Fast Boot)" {
-    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+    linux /boot/vmlinuz quiet loglevel=3 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
     initrd /boot/initramfs.gz
 }
 
 menuentry "BootOS (Safe Graphics Mode - nomodeset)" {
-    linux /boot/vmlinuz nomodeset kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+    linux /boot/vmlinuz nomodeset quiet loglevel=3 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
     initrd /boot/initramfs.gz
 }
 
 menuentry "BootOS (Legacy Hardware Compatibility Mode)" {
-    linux /boot/vmlinuz nomodeset acpi=noirq noapic pci=nomsi kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
+    linux /boot/vmlinuz nomodeset vga=normal quiet loglevel=3 kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
     initrd /boot/initramfs.gz
 }
 
-menuentry "BootOS (Quiet Mode)" {
-    linux /boot/vmlinuz quiet kexec_load_disabled=0 console=tty0 init=/init
+menuentry "BootOS (Verbose Debug Mode)" {
+    linux /boot/vmlinuz kexec_load_disabled=0 console=tty0 usbcore.autosuspend=-1 init=/init
     initrd /boot/initramfs.gz
 }
 EOF
